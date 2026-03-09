@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.0.4  
+**Version:** 1.0.5  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,12 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.0.5
+- Added `SV_WaitForRez()` — when the player dies but a hero with a rez skill is still alive, the bot waits up to 30s to be resurrected instead of immediately aborting. Resumes movement after rez (saved waypoint cleared to avoid pathing into the same danger)
+- Added full wipe detection with clear log: `Warn` on party wipe before resigning
+- Added `IsRunFailed()` check at the top of the main loop — aborts after 5 cumulative party wipes per run (tracked by BotsHub's `TrackPartyStatus` adlib)
+- Death clears `$hasResume` so the bot doesn't try to walk back into the spot it just died
 
 ### v1.0.4
 - Increased `$SV_AGGRO_RANGE` from `$RANGE_EARSHOT * 1.5` (~1500) to `$RANGE_EARSHOT * 2` (~2000)

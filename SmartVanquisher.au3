@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.0.4
+; Version: 1.0.5
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -349,7 +349,22 @@ Func SV_BounceRoomba()
     While IsPlayerAlive() And Not GetAreaVanquished()
 
         If CheckStuck('Roomba', $SV_FARM_DURATION) == $FAIL Then Return $FAIL
-        If IsPlayerAndPartyWiped() Then Return $FAIL
+        If IsRunFailed() Then
+            Error('[SmartVanquisher] Too many party wipes - aborting run')
+            Return $FAIL
+        EndIf
+
+        ; If player is dead but a hero with rez is alive, wait to be rezzed
+        If IsPlayerDead() Then
+            If Not SV_WaitForRez() Then Return $FAIL
+            $hasResume = False   ; don't resume old waypoint after death
+            ContinueLoop
+        EndIf
+
+        If IsPlayerAndPartyWiped() Then
+            Warn('[SmartVanquisher] Full party wipe - resigning')
+            Return $FAIL
+        EndIf
 
         ; --- Combat check at wide range so we aggro before walking into a group ---
         If SV_CombatCheck() == $FAIL Then Return $FAIL
@@ -622,6 +637,31 @@ Func SV_DeflectFromPortals($myX, $myY, $heading, $portals)
     Return $heading
 EndFunc
 
+
+
+; ===========================================================================
+; DEATH HANDLING
+; ===========================================================================
+
+; Wait up to $timeoutMs for a hero to resurrect the player.
+; Returns True if rezzed, False if timed out (full wipe or no rez hero).
+Func SV_WaitForRez($timeoutMs = 30000)
+    Warn('[SmartVanquisher] Player is dead - waiting for resurrection...')
+    Local $timer = TimerInit()
+    While IsPlayerDead()
+        If IsPlayerAndPartyWiped() Then
+            Warn('[SmartVanquisher] Full party wipe while waiting for rez')
+            Return False
+        EndIf
+        If TimerDiff($timer) > $timeoutMs Then
+            Warn('[SmartVanquisher] Rez timeout after ' & Round($timeoutMs/1000) & 's - treating as wipe')
+            Return False
+        EndIf
+        Sleep(500)
+    WEnd
+    Info('[SmartVanquisher] Resurrected - resuming')
+    Return True
+EndFunc
 
 
 ; ===========================================================================
