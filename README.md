@@ -1,6 +1,7 @@
 # SmartVanquisher
 
 **Version:** 1.0.3  
+**Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
 **Game:** Guild Wars 1

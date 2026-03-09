@@ -5,7 +5,7 @@
 #                               #
 #################################
 ; Version: 1.0.3
-; Author: (your name here)
+; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
 ; A fully map-agnostic vanquisher. No map IDs, outpost IDs, or coordinates
