@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.0.2
+; Version: 1.0.3
 ; Author: (your name here)
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -89,6 +89,9 @@ Global Const $SV_FARM_DURATION         = 120 * 60 * 1000            ; 120 min
 
 ; Pause after each combat encounter (ms)
 Global Const $SV_POST_COMBAT_WAIT      = 800
+
+; Set to True to enable verbose navigation/combat logging, False for clean runs
+Global Const $SV_DEBUG                 = False
 
 ; Info string displayed in the BotsHub GUI
 Global Const $SV_FARM_INFORMATIONS = _
@@ -254,7 +257,7 @@ Func SV_EnterZoneFromOutpost()
     For $i = 0 To $n - 1
         Local $px = DllStructGetData($portals[$i], 'X')
         Local $py = DllStructGetData($portals[$i], 'Y')
-        Info('[SmartVanquisher] Trying portal ' & ($i+1) & '/' & $n & ' at (' & Round($px) & ',' & Round($py) & ')')
+        SV_DBG('[SmartVanquisher] Trying portal ' & ($i+1) & '/' & $n & ' at (' & Round($px) & ',' & Round($py) & ')')
         GoToSignpost($portals[$i])
         WaitMapLoading($sv_map_id, 12000, 1000)
         If GetMapID() = $sv_map_id Then Return $SUCCESS
@@ -298,6 +301,16 @@ EndFunc
 
 
 ; ===========================================================================
+; LOGGING HELPER
+; ===========================================================================
+
+; Verbose log - only prints when $SV_DEBUG = True
+Func SV_DBG($msg)
+    If $SV_DEBUG Then Info($msg)
+EndFunc
+
+
+; ===========================================================================
 ; BOUNCE ROOMBA
 ;
 ; Inspired by a Roomba vacuum: pick a heading and walk straight.
@@ -323,7 +336,7 @@ Func SV_BounceRoomba()
     Else
         $heading = $PI / 2.0
     EndIf
-    Info('[SmartVanquisher] Initial heading=' & Round($heading * 180 / $PI) & 'deg')
+    SV_DBG('[SmartVanquisher] Initial heading=' & Round($heading * 180 / $PI) & 'deg')
 
     Local $stepsSinceNewCell = 0
     Local $lastCellCount     = 0
@@ -356,7 +369,7 @@ Func SV_BounceRoomba()
         Else
             $stepsSinceNewCell += 1
             If $stepsSinceNewCell >= 15 Then
-                Info('[SmartVanquisher] No new cells in 15 steps - bouncing')
+                SV_DBG('[SmartVanquisher] No new cells in 15 steps - bouncing')
                 $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL)
                 $stepsSinceNewCell = 0
                 $hasResume = False
@@ -371,10 +384,10 @@ Func SV_BounceRoomba()
             $targetX   = $resumeX
             $targetY   = $resumeY
             $hasResume = False
-            Info('[SmartVanquisher] Resuming to saved waypoint (' & Round($targetX) & ',' & Round($targetY) & ')')
+            SV_DBG('[SmartVanquisher] Resuming to saved waypoint (' & Round($targetX) & ',' & Round($targetY) & ')')
         Else
             If Not SV_DirectionOpen($myX, $myY, $heading, $portals) Then
-                Info('[SmartVanquisher] Portal ahead - bouncing')
+                SV_DBG('[SmartVanquisher] Portal ahead - bouncing')
                 $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL)
                 ContinueLoop
             EndIf
@@ -399,7 +412,7 @@ Func SV_BounceRoomba()
                 $resumeY   = $targetY
                 $hasResume = True
                 $combatInterrupted = True
-                Info('[SmartVanquisher] Foes detected mid-step - stopping to fight')
+                SV_DBG('[SmartVanquisher] Foes detected mid-step - stopping to fight')
                 ExitLoop
             EndIf
 
@@ -407,7 +420,7 @@ Func SV_BounceRoomba()
             Local $fracY = $myY + ($dirY * $s / $subSteps)
 
             If Not SV_MoveTo($fracX, $fracY) Then
-                Info('[SmartVanquisher] Wall hit at sub-step ' & $s & ' - bouncing')
+                SV_DBG('[SmartVanquisher] Wall hit at sub-step ' & $s & ' - bouncing')
                 $wallHit = True
                 ExitLoop
             EndIf
@@ -441,7 +454,7 @@ Func SV_BounceRoomba()
 
         ; Check overall arrival - if still far from target after all sub-steps, bounce
         If SV_Dist($myX, $myY, $targetX, $targetY) > $SV_BOUNCE_STEP * 1.5 Then
-            Info('[SmartVanquisher] Did not reach waypoint - bouncing')
+            SV_DBG('[SmartVanquisher] Did not reach waypoint - bouncing')
             SV_PoisonDirection($myX, $myY, $heading, $visitedKeys, $visitedCount, $MAX_VISITED, $CELL)
             $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL)
             $stepsSinceNewCell = 0
@@ -492,7 +505,7 @@ Func SV_PickBounceHeading($myX, $myY, $blockedHeading, ByRef $visitedKeys, $visi
         EndIf
     Next
 
-    Info('[SmartVanquisher] Bounce: ' & Round($blockedHeading*180/$PI) & 'deg blocked -> new=' & Round($bestHeading*180/$PI) & 'deg (score=' & $bestScore & ')')
+    SV_DBG('[SmartVanquisher] Bounce: ' & Round($blockedHeading*180/$PI) & 'deg blocked -> new=' & Round($bestHeading*180/$PI) & 'deg (score=' & $bestScore & ')')
     Return $bestHeading
 EndFunc
 
@@ -633,6 +646,7 @@ EndFunc
 ; Cooldown slots are skipped immediately with no delay.
 ; Outer While repeats until no foes remain in earshot.
 Func SV_CombatLoop()
+    Local $lastTargetID = 0
     While True
         Local $me = GetMyAgent()
         If IsPlayerDead() Then Return $FAIL
@@ -646,10 +660,19 @@ Func SV_CombatLoop()
             If $target = Null Or DllStructGetData($target, 'ID') = 0 Or GetIsDead($target) Then ExitLoop
         EndIf
 
+        Local $targetID = DllStructGetData($target, 'ID')
+
         ; Walk into attack range if target is far
         If GetDistance($me, $target) > $RANGE_EARSHOT Then GetAlmostInRangeOfAgent($target)
-        ChangeTarget($target)
-        Attack($target, True)   ; True = call target, signals heroes to focus this enemy
+
+        ; Only call target + Attack when target actually changes - prevents spamming
+        ; the party call every loop iteration when skills are on cooldown
+        If $targetID <> $lastTargetID Then
+            $lastTargetID = $targetID
+            ChangeTarget($target)
+            Attack($target, True)   ; True = call target, signals heroes to focus this enemy
+            Info('[SmartVanquisher] Targeting agent ID=' & $targetID)
+        EndIf
 
         For $slot = 1 To 8
             If IsPlayerDead() Then Return $FAIL

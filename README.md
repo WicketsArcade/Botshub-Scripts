@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.0.2  
+**Version:** 1.0.3  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
 **Game:** Guild Wars 1
@@ -135,6 +135,12 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.0.3
+- Fixed double target call: `Attack($target, True)` now only fires when the target ID changes, preventing the party call from spamming on every skill cooldown loop iteration
+- Added `$SV_DEBUG` constant (default `False`) — set to `True` to enable verbose navigation/bounce/wall logging for troubleshooting; `Warn()` and `Error()` always print regardless
+- Added `SV_DBG()` helper wrapping all movement/navigation `Info()` calls under the debug flag
+- Added combat target log: `Info('[SmartVanquisher] Targeting agent ID=...')` fires once per new target
 
 ### v1.0.2
 - Fixed re-entry loop: `SV_EnterZoneFromOutpost` now tries **all** portal agents sorted by distance, rezoning back to the outpost between attempts if the wrong zone is entered. Falls back to `TravelToOutpost` as a last resort
