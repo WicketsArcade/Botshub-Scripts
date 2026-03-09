@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.0.3  
+**Version:** 1.0.4  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,9 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.0.4
+- Increased `$SV_AGGRO_RANGE` from `$RANGE_EARSHOT * 1.5` (~1500) to `$RANGE_EARSHOT * 2` (~2000)
 
 ### v1.0.3
 - Fixed double target call: `Attack($target, True)` now only fires when the target ID changes, preventing the party call from spamming on every skill cooldown loop iteration

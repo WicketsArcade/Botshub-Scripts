@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.0.3
+; Version: 1.0.4
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -76,7 +76,7 @@ Opt('MustDeclareVars', True)
 Global Const $SV_BOUNCE_STEP           = $RANGE_EARSHOT             ; ~1000
 
 ; Aggro scan range - stop moving and fight if foes within this distance
-Global Const $SV_AGGRO_RANGE           = $RANGE_EARSHOT * 1.5       ; ~1500
+Global Const $SV_AGGRO_RANGE           = $RANGE_EARSHOT * 2         ; ~2000
 
 ; Cell size for visited-area tracking
 Global Const $SV_BOUNCE_CELL_SIZE      = $RANGE_EARSHOT             ; ~1000
