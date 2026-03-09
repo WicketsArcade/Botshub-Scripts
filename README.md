@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.0.0  
+**Version:** 1.0.2  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
 **Game:** Guild Wars 1
@@ -135,6 +135,14 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.0.2
+- Fixed re-entry loop: `SV_EnterZoneFromOutpost` now tries **all** portal agents sorted by distance, rezoning back to the outpost between attempts if the wrong zone is entered. Falls back to `TravelToOutpost` as a last resort
+- Fixed accidental portal entry: added `SV_NearAnyPortal` real-time tripwire — after each sub-step the player's actual position is checked against all portals; if too close, movement stops and the heading is bounced immediately
+- Moved `SV_GetPortalAgents` call outside the `Else` branch so `$portals` is always in scope for the sub-step safety check
+
+### v1.0.1
+- `Attack($target, True)` — enabled the `callTarget` flag so the bot calls out its attack target in party chat, signalling heroes to focus the same enemy
 
 ### v1.0.0 — Initial Release
 - Bounce Roomba movement algorithm

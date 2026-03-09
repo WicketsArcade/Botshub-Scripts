@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.0.0
+; Version: 1.0.2
 ; Author: (your name here)
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -218,49 +218,66 @@ EndFunc
 
 
 ; Walk to and activate the zone portal in the outpost that leads to $sv_map_id.
-; Iterates all static agents to find the correct portal rather than blindly using
-; the nearest, since outposts contain other static objects (decorations, etc.).
-; Falls back to nearest signpost if no match found by proximity heuristic.
+; Tries all static portal agents sorted by proximity, walking to each one until
+; the game zones us into $sv_map_id. This handles outposts with multiple portals
+; where the nearest one doesn't lead to the target zone.
+; If no portal works, uses TravelToOutpost as a last resort.
 Func SV_EnterZoneFromOutpost()
-    Local $me     = GetMyAgent()
-    Local $myX    = DllStructGetData($me, 'X')
-    Local $myY    = DllStructGetData($me, 'Y')
-    Local $portal = Null
+    Local $me  = GetMyAgent()
+    Local $myX = DllStructGetData($me, 'X')
+    Local $myY = DllStructGetData($me, 'Y')
 
-    ; Strategy: try each static agent, walk to it, and see if it zones us.
-    ; Sort by distance and try the closest ones first (portals are typically close to spawn).
+    ; Collect all static portal agents with their distances
     Local $statics  = GetAgentArray($ID_AGENT_TYPE_STATIC)
-    Local $bestDist = 1000000000
-
-    ; Pick the closest static agent as our first candidate (GW outpost portals
-    ; are almost always the nearest static to the player spawn point)
+    Local $portals[32]
+    Local $dists[32]
+    Local $n = 0
     For $a In $statics
-        Local $ax   = DllStructGetData($a, 'X')
-        Local $ay   = DllStructGetData($a, 'Y')
-        Local $dist = SV_Dist($myX, $myY, $ax, $ay)
-        If $dist < $bestDist Then
-            $bestDist = $dist
-            $portal   = $a
+        If Not SV_IsPortalAgent($a) Then ContinueLoop
+        If $n >= 32 Then ExitLoop
+        $portals[$n] = $a
+        $dists[$n]   = SV_Dist($myX, $myY, DllStructGetData($a,'X'), DllStructGetData($a,'Y'))
+        $n += 1
+    Next
+
+    ; Bubble sort by distance ascending (n is small, this is fine)
+    For $i = 0 To $n - 2
+        For $j = 0 To $n - $i - 2
+            If $dists[$j] > $dists[$j + 1] Then
+                Local $tmpD = $dists[$j]   : $dists[$j]   = $dists[$j+1] : $dists[$j+1] = $tmpD
+                Local $tmpP = $portals[$j] : $portals[$j] = $portals[$j+1] : $portals[$j+1] = $tmpP
+            EndIf
+        Next
+    Next
+
+    ; Try each portal closest-first
+    For $i = 0 To $n - 1
+        Local $px = DllStructGetData($portals[$i], 'X')
+        Local $py = DllStructGetData($portals[$i], 'Y')
+        Info('[SmartVanquisher] Trying portal ' & ($i+1) & '/' & $n & ' at (' & Round($px) & ',' & Round($py) & ')')
+        GoToSignpost($portals[$i])
+        WaitMapLoading($sv_map_id, 12000, 1000)
+        If GetMapID() = $sv_map_id Then Return $SUCCESS
+        ; Wrong zone - we may have zoned somewhere else, travel back to try next portal
+        If GetMapType() = $ID_EXPLORABLE Then
+            Warn('[SmartVanquisher] Wrong zone (mapID=' & GetMapID() & ') - returning to outpost')
+            Resign()
+            Sleep(3000)
+            ReturnToOutpost()
+            WaitMapLoading(-1, 10000, 1000)
         EndIf
     Next
 
-    If $portal = Null Then
-        Warn('[SmartVanquisher] No static agents found in outpost - cannot enter zone')
-        Return $FAIL
+    ; Last resort: use TravelToOutpost if we have a valid outpost ID
+    If $sv_outpost_id > 0 Then
+        Warn('[SmartVanquisher] All portals failed - trying TravelToOutpost(' & $sv_outpost_id & ')')
+        TravelToOutpost($sv_outpost_id)
+        WaitMapLoading($sv_outpost_id, 15000, 1000)
+        Return $FAIL   ; Return FAIL so BotsHub retries the run fresh next loop
     EndIf
 
-    Info('[SmartVanquisher] Walking to portal at (' & _
-         Round(DllStructGetData($portal,'X')) & ',' & Round(DllStructGetData($portal,'Y')) & ')')
-
-    GoToSignpost($portal)
-    WaitMapLoading($sv_map_id, 15000, 1500)
-
-    If GetMapID() <> $sv_map_id Then
-        Warn('[SmartVanquisher] Zone entry failed (mapID=' & GetMapID() & ' expected ' & $sv_map_id & ')')
-        Return $FAIL
-    EndIf
-
-    Return $SUCCESS
+    Warn('[SmartVanquisher] Could not enter zone ' & $sv_map_id)
+    Return $FAIL
 EndFunc
 
 
@@ -348,6 +365,7 @@ Func SV_BounceRoomba()
         EndIf
 
         ; Determine next waypoint - resume interrupted step or pick new one
+        Local $portals = SV_GetPortalAgents()   ; fetched here so sub-step loop can use it
         Local $targetX, $targetY
         If $hasResume Then
             $targetX   = $resumeX
@@ -355,7 +373,6 @@ Func SV_BounceRoomba()
             $hasResume = False
             Info('[SmartVanquisher] Resuming to saved waypoint (' & Round($targetX) & ',' & Round($targetY) & ')')
         Else
-            Local $portals = SV_GetPortalAgents()
             If Not SV_DirectionOpen($myX, $myY, $heading, $portals) Then
                 Info('[SmartVanquisher] Portal ahead - bouncing')
                 $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL)
@@ -398,6 +415,13 @@ Func SV_BounceRoomba()
             $me  = GetMyAgent()
             $myX = DllStructGetData($me, 'X')
             $myY = DllStructGetData($me, 'Y')
+
+            ; Safety: if we somehow ended up near a portal, stop immediately
+            If SV_NearAnyPortal($myX, $myY, $portals) Then
+                Warn('[SmartVanquisher] Too close to portal after sub-step - bouncing away')
+                $wallHit = True
+                ExitLoop
+            EndIf
         Next
 
         If $combatInterrupted Then
@@ -555,6 +579,19 @@ Func SV_DirectionOpen($myX, $myY, $dir, $portals)
 EndFunc
 
 
+; True if the player's current position is within portal safe distance of any portal.
+; Used as a real-time tripwire during movement to catch cases where the pathfinder
+; routes us closer to a portal than the planned waypoint check anticipated.
+Func SV_NearAnyPortal($myX, $myY, $portals)
+    For $a In $portals
+        If SV_Dist($myX, $myY, DllStructGetData($a,'X'), DllStructGetData($a,'Y')) < $SV_PORTAL_SAFE_DIST Then
+            Return True
+        EndIf
+    Next
+    Return False
+EndFunc
+
+
 ; Nudge $heading away from any portal within avoid radius that is roughly ahead.
 ; Accepts pre-fetched portal list - do not call SV_GetPortalAgents() again here.
 Func SV_DeflectFromPortals($myX, $myY, $heading, $portals)
@@ -612,7 +649,7 @@ Func SV_CombatLoop()
         ; Walk into attack range if target is far
         If GetDistance($me, $target) > $RANGE_EARSHOT Then GetAlmostInRangeOfAgent($target)
         ChangeTarget($target)
-        Attack($target)
+        Attack($target, True)   ; True = call target, signals heroes to focus this enemy
 
         For $slot = 1 To 8
             If IsPlayerDead() Then Return $FAIL
