@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.0.7
+; Version: 1.0.8
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -149,7 +149,11 @@ Func SmartVanquisherFarm()
             Return $PAUSE
         EndIf
         Info('[SmartVanquisher] In outpost - entering zone ' & $sv_map_id)
-        If SV_EnterZoneFromOutpost() == $FAIL Then Return $FAIL
+        If SV_EnterZoneFromOutpost() == $FAIL Then
+            Warn('[SmartVanquisher] Could not enter zone - pausing. Return to your starting outpost and press Start.')
+            SV_ClearState()
+            Return $PAUSE
+        EndIf
     EndIf
 
     ; ---- Guard: must now be in an explorable ---------------------------
@@ -214,24 +218,49 @@ Func SmartVanquisherFarm()
     AdlibUnRegister('TrackPartyStatus')
 
     ; ---- Return to outpost ---------------------------------------------
-    If $sv_outpost_id > 0 Then
-        ResignAndReturnToOutpost($sv_outpost_id)
-    Else
-        ; Fallback: resign and wait for the game to drop us to any outpost
-        Resign()
-        Sleep(3500)
-        ReturnToOutpost()
-        WaitMapLoading(-1, 10000, 1000)
+    If GetMapType() = $ID_EXPLORABLE Then
+        If $sv_outpost_id > 0 Then
+            ResignAndReturnToOutpost($sv_outpost_id)
+        Else
+            ; Fallback: resign and wait for the game to drop us to any outpost
+            Resign()
+            Sleep(3500)
+            ReturnToOutpost()
+            WaitMapLoading(-1, 10000, 1000)
+        EndIf
     EndIf
 
-    Return $result
+    ; Always pause after a failed run - don't retry automatically.
+    ; A vanquish run requires a clean start from the correct outpost and position.
+    If $result <> $SUCCESS Then
+        Warn('[SmartVanquisher] Run ended - pausing. Return to your starting outpost and press Start to try again.')
+        SV_ClearState()
+        Return $PAUSE
+    EndIf
+
+    Info('[SmartVanquisher] Zone vanquished - run complete!')
+    Return $SUCCESS
 EndFunc
 
 
-; Reset all per-run state variables
+; Reset all per-run mutable state (timers, failure counters)
 Func SV_ResetState()
     IsPlayerStuck(Default, Default, True)
     ResetFailuresCounter()
+EndFunc
+
+
+; Full state clear - called on pause/failure so the next Start is always fresh.
+; Resets map ID so the bot re-captures zone context on next run rather than
+; assuming it is still in the same zone.
+Func SV_ClearState()
+    SV_ResetState()
+    $sv_map_id              = -1
+    $sv_outpost_id          = -1
+    $sv_entry_x             = 0.0
+    $sv_entry_y             = 0.0
+    $sv_entry_portal_found  = False
+    $sv_danger_zone_count   = 0
 EndFunc
 
 
@@ -298,7 +327,7 @@ Func SV_EnterZoneFromOutpost()
         Warn('[SmartVanquisher] All portals failed - trying TravelToOutpost(' & $sv_outpost_id & ')')
         TravelToOutpost($sv_outpost_id)
         WaitMapLoading($sv_outpost_id, 15000, 1000)
-        Return $FAIL   ; Return FAIL so BotsHub retries the run fresh next loop
+        Return $FAIL   ; Propagates up to SmartVanquisherFarm which converts to $PAUSE
     EndIf
 
     Warn('[SmartVanquisher] Could not enter zone ' & $sv_map_id)

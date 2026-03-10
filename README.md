@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.0.7  
+**Version:** 1.0.8  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,12 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.0.8
+- **No automatic retry on failure:** All failure paths now return `$PAUSE` to BotsHub instead of `$FAIL`. The bot stops in the outpost and waits for you to manually press Start. A vanquish needs a deliberate restart from the correct outpost and position — blind retries don't make sense
+- **`SV_ClearState()`:** Called on any pause/failure. Resets `$sv_map_id` to -1 so the next Start always re-captures zone context fresh, rather than assuming you're still in the same zone
+- **`Return $PAUSE` on zone entry failure:** If `SV_EnterZoneFromOutpost()` can't get back into the zone, the bot pauses with a clear message instead of looping
+- **Guard on resign:** Added `If GetMapType() = $ID_EXPLORABLE` check before the post-run resign, so we don't try to resign if we're already in an outpost
 
 ### v1.0.7
 - **Portal learning system:** When the bot accidentally walks into a portal, it records the last safe position in `conf/portals/<mapID>.json`. On every subsequent run in that zone, those positions are loaded as hard exclusion zones with a ~2000 unit radius. Each map only needs to be learned once — the knowledge persists across sessions and builds up automatically
