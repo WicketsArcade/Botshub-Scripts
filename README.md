@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.0.8  
+**Version:** 1.0.9  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,10 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.0.9
+- **Success now pauses:** `Return $SUCCESS` replaced with `SV_ClearState()` + `Return $PAUSE` — a completed vanquish stops and waits, it never loops into a second run automatically
+- **Already-vanquished guard:** `GetAreaVanquished()` is now checked at the very start of `SV_Run()` before bouncing begins. If the zone is already clear (e.g. re-entering a previously vanquished zone), the bot pauses with a warning instead of silently "succeeding" in 4 seconds and looping
 
 ### v1.0.8
 - **No automatic retry on failure:** All failure paths now return `$PAUSE` to BotsHub instead of `$FAIL`. The bot stops in the outpost and waits for you to manually press Start. A vanquish needs a deliberate restart from the correct outpost and position — blind retries don't make sense

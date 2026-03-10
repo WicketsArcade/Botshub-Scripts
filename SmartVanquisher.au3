@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.0.8
+; Version: 1.0.9
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -239,7 +239,8 @@ Func SmartVanquisherFarm()
     EndIf
 
     Info('[SmartVanquisher] Zone vanquished - run complete!')
-    Return $SUCCESS
+    SV_ClearState()
+    Return $PAUSE
 EndFunc
 
 
@@ -341,6 +342,10 @@ EndFunc
 
 Func SV_Run()
     If GetMapID() <> $sv_map_id Then Return $FAIL
+    If GetAreaVanquished() Then
+        Warn('[SmartVanquisher] Zone is already vanquished - pausing.')
+        Return $FAIL
+    EndIf
     Info('[SmartVanquisher] Starting bounce roomba')
     Local $result = SV_BounceRoomba()
     If GetAreaVanquished() Then
