@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.1.2
+; Version: 1.1.4
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -86,8 +86,8 @@ Global Const $SV_BOUNCE_CELL_SIZE      = $RANGE_EARSHOT             ; ~1000
 Global Const $SV_PORTAL_SAFE_DIST      = $RANGE_EARSHOT * 1.5       ; ~1500
 
 ; Exclusion radius around a learned danger zone (portal entry point)
-; Larger than $SV_PORTAL_SAFE_DIST since we know exactly where it is
-Global Const $SV_DANGER_ZONE_RADIUS    = $RANGE_EARSHOT * 2.0       ; ~2000
+; Keep this equal to EARSHOT - a 2x radius blocks the entire spawn in narrow corridors
+Global Const $SV_DANGER_ZONE_RADIUS    = $RANGE_EARSHOT * 1.2       ; ~1200
 
 ; Minimum distance between two danger zones - prevents duplicate entries
 Global Const $SV_DANGER_ZONE_MERGE_DIST = 500
@@ -216,17 +216,10 @@ Func SmartVanquisherFarm()
     ; Load any previously learned danger zones (portal entry points) for this map
     SV_LoadDangerZones()
 
-    ; Register the entry portal as a runtime-only danger zone so the bot deflects
-    ; away from it during navigation. Not saved to file - it's detected fresh each run.
-    ; SV_GetPortalAgents already excludes it from the signpost list so re-entry still works.
-    If $sv_entry_portal_found Then
-        If $sv_danger_zone_count < 64 Then
-            $sv_danger_zones[$sv_danger_zone_count][0] = $sv_entry_portal_x
-            $sv_danger_zones[$sv_danger_zone_count][1] = $sv_entry_portal_y
-            $sv_danger_zone_count += 1
-            SV_DBG('[SmartVanquisher] Entry portal registered as runtime danger zone')
-        EndIf
-    EndIf
+    ; NOTE: Entry portal is intentionally NOT added to danger zones.
+    ; SV_GetPortalAgents() already strips it from the signpost portal list,
+    ; so it is fully ignored during navigation. Adding it as a danger zone
+    ; causes the exclusion bubble to cover the spawn area itself.
 
     ; ---- Reset per-run mutable state ------------------------------------
     SV_ResetState()
@@ -656,11 +649,34 @@ Func SV_PickBounceHeading($myX, $myY, $blockedHeading, ByRef $visitedKeys, $visi
     ; all candidates are blocked by portals or danger zones
     Local $bestHeading = SV_WrapAngle($blockedHeading + $PI)
     Local $bestScore   = -9999.0
+    Local $bestFallbackHeading = $bestHeading   ; least-bad option if all blocked
+    Local $bestFallbackClearance = -1.0         ; min portal clearance for least-bad option
 
     For $i = 0 To 5
         Local $candidate = SV_WrapAngle($blockedHeading + $offsets[$i])
 
-        If Not SV_DirectionOpen($myX, $myY, $candidate, $portals) Then ContinueLoop
+        If Not SV_DirectionOpen($myX, $myY, $candidate, $portals) Then
+            ; Track the least-blocked direction as an emergency fallback
+            ; Score by minimum clearance along the path (higher = less overlap)
+            Local $minClear = 1000000.0
+            For $frac = 1 To 4
+                Local $fdx = $myX + ($SV_BOUNCE_STEP * $frac / 4.0) * Cos($candidate)
+                Local $fdy = $myY + ($SV_BOUNCE_STEP * $frac / 4.0) * Sin($candidate)
+                For $j = 0 To $sv_danger_zone_count - 1
+                    Local $dz = SV_Dist($fdx, $fdy, $sv_danger_zones[$j][0], $sv_danger_zones[$j][1])
+                    If $dz < $minClear Then $minClear = $dz
+                Next
+                For $pa In $portals
+                    Local $pd = SV_Dist($fdx, $fdy, DllStructGetData($pa,'X'), DllStructGetData($pa,'Y'))
+                    If $pd < $minClear Then $minClear = $pd
+                Next
+            Next
+            If $minClear > $bestFallbackClearance Then
+                $bestFallbackClearance = $minClear
+                $bestFallbackHeading   = $candidate
+            EndIf
+            ContinueLoop
+        EndIf
 
         ; Component 1: unvisited cell lookahead
         Local $cellScore = 0
@@ -695,6 +711,12 @@ Func SV_PickBounceHeading($myX, $myY, $blockedHeading, ByRef $visitedKeys, $visi
             $bestHeading = $candidate
         EndIf
     Next
+
+    ; If all scored candidates were portal-blocked, use least-bad emergency heading
+    If $bestScore = -9999.0 Then
+        $bestHeading = $bestFallbackHeading
+        Warn('[SmartVanquisher] All directions portal-blocked - using least-bad heading ' & Round($bestHeading*180/$PI) & 'deg')
+    EndIf
 
     SV_DBG('[SmartVanquisher] Bounce: ' & Round($blockedHeading*180/$PI) & 'deg blocked -> new=' & Round($bestHeading*180/$PI) & 'deg (score=' & Round($bestScore, 1) & ')')
     Return $bestHeading

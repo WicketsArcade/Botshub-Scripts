@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.1.2  
+**Version:** 1.1.4  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,14 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.1.4
+- **Removed entry portal from danger zones:** v1.1.2 mistakenly added the entry portal as a runtime danger zone to deflect the bot away from it. Since spawn can be as close as ~500 units to the entry portal, the 1200-unit exclusion bubble covered the entire spawn area, blocking all candidate headings and causing infinite ping-pong. The entry portal was already correctly handled by `SV_GetPortalAgents()` stripping it from the signpost list — no danger zone needed
+
+### v1.1.3
+- **Danger zone radius reduced from `2.0x` to `1.2x` earshot (~1200 units):** A 2000-unit radius was bleeding into unrelated directions from narrow spawns
+- **Least-bad fallback in `SV_PickBounceHeading`:** When all 6 candidate directions are portal-blocked, instead of reversing (which may also be blocked), the bot now picks the candidate with the greatest minimum clearance from any portal and logs a warning
+- **File logging added to `BotsHub-GUI.au3`:** All log output now written to `logs\botshub-YYYYMMDD-HHMMSS.log` for post-mortem debugging
 
 ### v1.1.2
 - **Hard Mode check moved to entry point:** `GetIsHardMode()` now fires in `SmartVanquisherFarm()` before any zone logic runs, not just inside `SV_Run()`. Previously a portal re-entry path could bypass the check entirely, causing the bot to see `GetAreaVanquished() = True` (Normal Mode behaviour) and exit as "success"
