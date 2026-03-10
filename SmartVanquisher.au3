@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.2.1
+; Version: 1.2.2
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -983,8 +983,10 @@ Func SV_CombatLoop()
     Local $lastTargetID = 0
     While True
         Local $me = GetMyAgent()
-        If IsPlayerDead() Then Return $FAIL
-        If IsPlayerAndPartyWiped() Then Return $FAIL
+        ; Don't return $FAIL on death - break out so the main loop's
+        ; SV_WaitUntilAlive handler runs (shrine respawn / rez logic)
+        If IsPlayerDead() Then ExitLoop
+        If IsPlayerAndPartyWiped() Then ExitLoop
         If CountFoesInRangeOfAgent($me, $SV_AGGRO_RANGE) = 0 Then ExitLoop
 
         Local $target = GetNearestEnemyToAgent($me)
@@ -1009,7 +1011,7 @@ Func SV_CombatLoop()
         EndIf
 
         For $slot = 1 To 8
-            If IsPlayerDead() Then Return $FAIL
+            If IsPlayerDead() Then ExitLoop
             $me     = GetMyAgent()
             $target = GetCurrentTarget()
             If $target = Null Or DllStructGetData($target, 'ID') = 0 Then ExitLoop

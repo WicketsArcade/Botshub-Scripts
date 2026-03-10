@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.2.1  
+**Version:** 1.2.2  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,9 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.2.2
+- **Combat loop no longer aborts on death:** `SV_CombatLoop` was returning `$FAIL` when `IsPlayerDead()` fired mid-combat, which propagated straight to `SmartVanquisherFarm` as a run failure — completely bypassing the `SV_WaitUntilAlive` shrine-respawn logic added in v1.2.0. Now both `IsPlayerDead` and `IsPlayerAndPartyWiped` in the combat loop do `ExitLoop` instead, returning `$SUCCESS` back to the main roomba loop which then hits the death handler on the next iteration and waits for respawn
 
 ### v1.2.1
 - **Cornered detection:** Tracks consecutive wall-hits on sub-step 1 (meaning the bot can't move even 250 units in any direction). After 6 in a row it declares itself cornered, calls `TryToGetUnstuck` toward a random escape target 3000 units away, resets heading to the escape angle, and clears the waypoint. This handles the case where the bounce scoring cycles through all headings but every one hits an immediate wall — the visited-cell map is all poisoned and no scored heading can escape the corner
