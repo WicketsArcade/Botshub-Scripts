@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.1.5  
+**Version:** 1.2.0  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,15 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.2.0
+- **Wipe handling completely rewritten:** GW auto-respawns the party at the nearest resurrection shrine after a full wipe — no re-entry needed. The bot now simply waits for the respawn and resumes the run from the shrine. Two paths:
+  - *Hero with rez alive:* wait up to 30s for in-place resurrection, then resume toward last position
+  - *Full wipe / no rez hero:* wait up to 60s for GW's automatic shrine respawn, then resume
+  - *Either path, DP >= 60% after respawn:* return to outpost and pause — only safe option
+- **`$SV_MAX_DP_TO_CONTINUE = -60`** tuning constant added — adjust to taste (e.g. `-40` to bail earlier)
+- **Removed `IsRunFailed()` hard abort** — the 5-wipe counter no longer makes sense now that wipes are handled gracefully
+- **`SV_WaitForRez` replaced by `SV_WaitUntilAlive`** — unified function handles both in-place rez and shrine respawn with DP check at the end
 
 ### v1.1.5
 - **Danger zone radius reduced to 650 units:** The learned portal at (19800, 11176) is only 554 units from spawn. Any radius above ~650 causes the exclusion bubble to cover the entire spawn area, blocking all candidate headings. 650 is the minimum value that reliably deflects a moving bot without paralyzing it at spawn

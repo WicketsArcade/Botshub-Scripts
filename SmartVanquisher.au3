@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.1.5
+; Version: 1.2.0
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -100,6 +100,12 @@ Global Const $SV_POST_COMBAT_WAIT      = 800
 
 ; Set to True to enable verbose navigation/combat logging, False for clean runs
 Global Const $SV_DEBUG                 = False
+
+; Maximum death penalty (as negative morale, e.g. -60 = 60% DP) before we
+; abandon the run instead of re-entering after a wipe. 0 = never retry.
+Global Const $SV_MAX_DP_TO_CONTINUE    = -60
+
+
 
 ; Info string displayed in the BotsHub GUI
 Global Const $SV_FARM_INFORMATIONS = _
@@ -428,21 +434,16 @@ Func SV_BounceRoomba()
     While IsPlayerAlive() And Not GetAreaVanquished()
 
         If CheckStuck('Roomba', $SV_FARM_DURATION) == $FAIL Then Return $FAIL
-        If IsRunFailed() Then
-            Error('[SmartVanquisher] Too many party wipes - aborting run')
-            Return $FAIL
-        EndIf
-
-        ; If player is dead but a hero with rez is alive, wait to be rezzed
-        If IsPlayerDead() Then
-            If Not SV_WaitForRez() Then Return $FAIL
-            $hasResume = False   ; don't resume old waypoint after death
+        ; Death / wipe handling
+        If IsPlayerDead() Or IsPlayerAndPartyWiped() Then
+            ; Wait to be back on our feet - either in-place rez by a hero,
+            ; or the automatic shrine respawn after a full party wipe.
+            If Not SV_WaitUntilAlive() Then
+                Return $FAIL   ; DP >= 60% - only option is return to town
+            EndIf
+            ; Back alive - clear resume waypoint so we pathfind fresh from shrine
+            $hasResume = False
             ContinueLoop
-        EndIf
-
-        If IsPlayerAndPartyWiped() Then
-            Warn('[SmartVanquisher] Full party wipe - resigning')
-            Return $FAIL
         EndIf
 
         ; --- Combat check at wide range so we aggro before walking into a group ---
@@ -863,21 +864,72 @@ EndFunc
 
 ; Wait up to $timeoutMs for a hero to resurrect the player.
 ; Returns True if rezzed, False if timed out (full wipe or no rez hero).
-Func SV_WaitForRez($timeoutMs = 30000)
-    Warn('[SmartVanquisher] Player is dead - waiting for resurrection...')
-    Local $timer = TimerInit()
-    While IsPlayerDead()
-        If IsPlayerAndPartyWiped() Then
-            Warn('[SmartVanquisher] Full party wipe while waiting for rez')
-            Return False
-        EndIf
-        If TimerDiff($timer) > $timeoutMs Then
-            Warn('[SmartVanquisher] Rez timeout after ' & Round($timeoutMs/1000) & 's - treating as wipe')
-            Return False
-        EndIf
-        Sleep(500)
-    WEnd
-    Info('[SmartVanquisher] Resurrected - resuming')
+; Wait until the player is alive again, then check if DP is safe to continue.
+; Two paths:
+;   - Hero with rez alive: wait up to 30s for in-place resurrection
+;   - Full wipe / no rez:  wait up to 60s for GW automatic shrine respawn
+; Returns True if alive and DP < $SV_MAX_DP_TO_CONTINUE (run should continue).
+; Returns False if DP is too high (only option is return to town).
+Func SV_WaitUntilAlive()
+    If IsPlayerAndPartyWiped() Or Not HasRezMemberAlive() Then
+        ; Full wipe - GW will auto-respawn at nearest shrine, just wait
+        Warn('[SmartVanquisher] Party wiped - waiting for shrine respawn...')
+        Local $timer = TimerInit()
+        While IsPlayerDead() Or IsPlayerAndPartyWiped()
+            If TimerDiff($timer) > 60000 Then
+                Warn('[SmartVanquisher] Shrine respawn timeout - assuming stuck, pausing')
+                Return False
+            EndIf
+            Sleep(500)
+        WEnd
+        Info('[SmartVanquisher] Respawned at shrine - checking DP...')
+    Else
+        ; Hero with rez available - wait for in-place resurrection
+        Warn('[SmartVanquisher] Player dead - waiting for hero resurrection (up to 30s)...')
+        Local $timer = TimerInit()
+        While IsPlayerDead()
+            If IsPlayerAndPartyWiped() Or Not HasRezMemberAlive() Then
+                ; Heroes all died too - fall through to shrine wait
+                Warn('[SmartVanquisher] Heroes wiped while waiting for rez - waiting for shrine respawn...')
+                Local $timer2 = TimerInit()
+                While IsPlayerDead() Or IsPlayerAndPartyWiped()
+                    If TimerDiff($timer2) > 60000 Then
+                        Warn('[SmartVanquisher] Shrine respawn timeout - pausing')
+                        Return False
+                    EndIf
+                    Sleep(500)
+                WEnd
+                ExitLoop
+            EndIf
+            If TimerDiff($timer) > 30000 Then
+                Warn('[SmartVanquisher] Rez timeout after 30s - waiting for shrine respawn...')
+                Local $timer3 = TimerInit()
+                While IsPlayerDead() Or IsPlayerAndPartyWiped()
+                    If TimerDiff($timer3) > 60000 Then
+                        Warn('[SmartVanquisher] Shrine respawn timeout - pausing')
+                        Return False
+                    EndIf
+                    Sleep(500)
+                WEnd
+                ExitLoop
+            EndIf
+            Sleep(500)
+        WEnd
+        Info('[SmartVanquisher] Resurrected')
+    EndIf
+
+    ; Check DP - if too high the only option is return to outpost
+    Local $dp = GetMorale()   ; 0 = no DP/morale, negative = DP
+    If $dp <= $SV_MAX_DP_TO_CONTINUE Then
+        Warn('[SmartVanquisher] ' & Abs($dp) & '% DP - too risky to continue, returning to outpost')
+        Return False
+    EndIf
+
+    If $dp < 0 Then
+        Warn('[SmartVanquisher] ' & Abs($dp) & '% DP - continuing run')
+    Else
+        Info('[SmartVanquisher] Alive and ready - resuming')
+    EndIf
     Return True
 EndFunc
 
