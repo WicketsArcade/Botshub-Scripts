@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.0.5  
+**Version:** 1.0.7  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,19 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.0.7
+- **Portal learning system:** When the bot accidentally walks into a portal, it records the last safe position in `conf/portals/<mapID>.json`. On every subsequent run in that zone, those positions are loaded as hard exclusion zones with a ~2000 unit radius. Each map only needs to be learned once — the knowledge persists across sessions and builds up automatically
+- **`SV_LoadDangerZones()`:** Reads the per-map JSON file on zone entry and populates the runtime `$sv_danger_zones` array (up to 64 zones per map)
+- **`SV_LearnDangerZone(x, y)`:** Called on any accidental portal entry with the last known safe coordinates. Deduplicates against existing zones (within 500 units) before saving, so the same portal doesn't get recorded multiple times
+- **`SV_DirectionOpen()`** and **`SV_NearAnyPortal()`** both now check against learned danger zones in addition to the signpost-based portal list
+- **`$lastSafeX/$lastSafeY`** tracking added to the sub-step loop — always holds the last confirmed in-zone position so the learned coordinate is accurate even when zoning happens mid-step
+
+### v1.0.6
+- **Portal re-entry fix (hard):** After every `SV_MoveTo` call, `GetMapID()` is now checked against `$sv_map_id`. If we accidentally walked into a portal, the bot immediately detects the zone change, logs a warning, resigns, and returns to the outpost — rather than continuing to run in the wrong zone or crashing
+- **Mid-step zone check:** A second `GetMapID()` check fires after `SV_MoveTo` returns `True` as a belt-and-suspenders catch for cases where the game zones the player without `SV_MoveTo` detecting it
+- **Wrong-zone re-entry recovery:** `SV_EnterZoneFromOutpost` now uses `TravelToOutpost($sv_outpost_id)` (when known) to return after a wrong-zone entry, instead of `ReturnToOutpost()` which could land anywhere. Portal attempt log lines promoted from `SV_DBG` to `Info` so they always appear
+- **Portal safe distance increased:** `$SV_PORTAL_SAFE_DIST` raised from `$RANGE_EARSHOT` (~1000) to `$RANGE_EARSHOT * 1.5` (~1500) to give more margin before `SV_NearAnyPortal` and `SV_DirectionOpen` reject a heading
 
 ### v1.0.5
 - Added `SV_WaitForRez()` — when the player dies but a hero with a rez skill is still alive, the bot waits up to 30s to be resurrected instead of immediately aborting. Resumes movement after rez (saved waypoint cleared to avoid pathing into the same danger)

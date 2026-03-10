@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.0.5
+; Version: 1.0.7
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -65,6 +65,7 @@
 #include '../../lib/GWA2_ID.au3'
 #include '../../lib/Utils.au3'
 #include '../../lib/Utils-Agents.au3'
+#include '../../lib/JSON.au3'
 
 Opt('MustDeclareVars', True)
 
@@ -82,7 +83,14 @@ Global Const $SV_AGGRO_RANGE           = $RANGE_EARSHOT * 2         ; ~2000
 Global Const $SV_BOUNCE_CELL_SIZE      = $RANGE_EARSHOT             ; ~1000
 
 ; Portal exclusion radius - don't step toward a portal within this range
-Global Const $SV_PORTAL_SAFE_DIST      = $RANGE_EARSHOT             ; ~1000
+Global Const $SV_PORTAL_SAFE_DIST      = $RANGE_EARSHOT * 1.5       ; ~1500
+
+; Exclusion radius around a learned danger zone (portal entry point)
+; Larger than $SV_PORTAL_SAFE_DIST since we know exactly where it is
+Global Const $SV_DANGER_ZONE_RADIUS    = $RANGE_EARSHOT * 2.0       ; ~2000
+
+; Minimum distance between two danger zones - prevents duplicate entries
+Global Const $SV_DANGER_ZONE_MERGE_DIST = 500
 
 ; Maximum total run time (ms)
 Global Const $SV_FARM_DURATION         = 120 * 60 * 1000            ; 120 min
@@ -122,7 +130,11 @@ Global $sv_entry_portal_x = 0.0
 Global $sv_entry_portal_y = 0.0
 Global $sv_entry_portal_found = False
 
-; (visited cell tracking is managed locally inside SV_BounceRoomba)
+; Learned danger zones for this map - loaded from file on zone entry, appended
+; when we accidentally walk into a portal. Each entry is a 2-element array [x, y].
+; The exclusion radius $SV_DANGER_ZONE_RADIUS is applied at check time.
+Global $sv_danger_zones[64][2]   ; [index][0=x, 1=y]
+Global $sv_danger_zone_count = 0
 
 ; ===========================================================================
 ; ENTRY POINT
@@ -189,6 +201,9 @@ Func SmartVanquisherFarm()
     Info('[SmartVanquisher] mapID=' & $sv_map_id & _
          '  outpostID=' & $sv_outpost_id & _
          '  entry=(' & Round($sv_entry_x) & ',' & Round($sv_entry_y) & ')')
+
+    ; Load any previously learned danger zones (portal entry points) for this map
+    SV_LoadDangerZones()
 
     ; ---- Reset per-run mutable state ------------------------------------
     SV_ResetState()
@@ -257,15 +272,22 @@ Func SV_EnterZoneFromOutpost()
     For $i = 0 To $n - 1
         Local $px = DllStructGetData($portals[$i], 'X')
         Local $py = DllStructGetData($portals[$i], 'Y')
-        SV_DBG('[SmartVanquisher] Trying portal ' & ($i+1) & '/' & $n & ' at (' & Round($px) & ',' & Round($py) & ')')
+        Info('[SmartVanquisher] Trying portal ' & ($i+1) & '/' & $n & ' at (' & Round($px) & ',' & Round($py) & ')')
         GoToSignpost($portals[$i])
         WaitMapLoading($sv_map_id, 12000, 1000)
         If GetMapID() = $sv_map_id Then Return $SUCCESS
-        ; Wrong zone - we may have zoned somewhere else, travel back to try next portal
+
+        ; Wrong zone - resign back to wherever we ended up, then travel to the
+        ; correct outpost if we know it, otherwise just return to any outpost
+        Warn('[SmartVanquisher] Wrong zone (mapID=' & GetMapID() & ') - returning to outpost')
         If GetMapType() = $ID_EXPLORABLE Then
-            Warn('[SmartVanquisher] Wrong zone (mapID=' & GetMapID() & ') - returning to outpost')
             Resign()
             Sleep(3000)
+        EndIf
+        If $sv_outpost_id > 0 Then
+            TravelToOutpost($sv_outpost_id)
+            WaitMapLoading($sv_outpost_id, 15000, 1000)
+        Else
             ReturnToOutpost()
             WaitMapLoading(-1, 10000, 1000)
         EndIf
@@ -418,6 +440,11 @@ Func SV_BounceRoomba()
         Local $dirX  = ($targetX - $myX)
         Local $dirY  = ($targetY - $myY)
 
+        ; Track position just before each move so if we zone we know where the
+        ; portal boundary was (in our map's coordinate space, not the new zone's)
+        Local $lastSafeX = $myX
+        Local $lastSafeY = $myY
+
         For $s = 1 To $subSteps
             If Not IsPlayerAlive() Then ExitLoop
             If IsPlayerAndPartyWiped() Then ExitLoop
@@ -435,14 +462,37 @@ Func SV_BounceRoomba()
             Local $fracY = $myY + ($dirY * $s / $subSteps)
 
             If Not SV_MoveTo($fracX, $fracY) Then
+                ; Check if SV_MoveTo bailed because we zoned (walked into a portal)
+                If GetMapID() <> $sv_map_id Then
+                    Warn('[SmartVanquisher] Accidentally entered portal - learning location (' & Round($lastSafeX) & ',' & Round($lastSafeY) & ')')
+                    SV_LearnDangerZone($lastSafeX, $lastSafeY)
+                    Resign()
+                    Sleep(3500)
+                    ReturnToOutpost()
+                    WaitMapLoading(-1, 10000, 1000)
+                    Return $FAIL
+                EndIf
                 SV_DBG('[SmartVanquisher] Wall hit at sub-step ' & $s & ' - bouncing')
                 $wallHit = True
                 ExitLoop
             EndIf
 
+            ; Hard check: did we zone mid-step even though SV_MoveTo returned True?
+            If GetMapID() <> $sv_map_id Then
+                Warn('[SmartVanquisher] Zoned unexpectedly mid-step - learning location (' & Round($lastSafeX) & ',' & Round($lastSafeY) & ')')
+                SV_LearnDangerZone($lastSafeX, $lastSafeY)
+                Resign()
+                Sleep(3500)
+                ReturnToOutpost()
+                WaitMapLoading(-1, 10000, 1000)
+                Return $FAIL
+            EndIf
+
             $me  = GetMyAgent()
             $myX = DllStructGetData($me, 'X')
             $myY = DllStructGetData($me, 'Y')
+            $lastSafeX = $myX   ; update safe position after confirmed arrival
+            $lastSafeY = $myY
 
             ; Safety: if we somehow ended up near a portal, stop immediately
             If SV_NearAnyPortal($myX, $myY, $portals) Then
@@ -602,17 +652,27 @@ Func SV_DirectionOpen($myX, $myY, $dir, $portals)
                 Return False
             EndIf
         Next
+        ; Also check against learned danger zones
+        For $i = 0 To $sv_danger_zone_count - 1
+            If SV_Dist($dx, $dy, $sv_danger_zones[$i][0], $sv_danger_zones[$i][1]) < $SV_DANGER_ZONE_RADIUS Then
+                Return False
+            EndIf
+        Next
     Next
     Return True
 EndFunc
 
 
-; True if the player's current position is within portal safe distance of any portal.
-; Used as a real-time tripwire during movement to catch cases where the pathfinder
-; routes us closer to a portal than the planned waypoint check anticipated.
+; True if the player's current position is within portal safe distance of any portal
+; or within danger zone radius of any learned danger zone.
 Func SV_NearAnyPortal($myX, $myY, $portals)
     For $a In $portals
         If SV_Dist($myX, $myY, DllStructGetData($a,'X'), DllStructGetData($a,'Y')) < $SV_PORTAL_SAFE_DIST Then
+            Return True
+        EndIf
+    Next
+    For $i = 0 To $sv_danger_zone_count - 1
+        If SV_Dist($myX, $myY, $sv_danger_zones[$i][0], $sv_danger_zones[$i][1]) < $SV_DANGER_ZONE_RADIUS Then
             Return True
         EndIf
     Next
@@ -744,6 +804,101 @@ Func SV_IsPortalAgent($agent)
 EndFunc
 
 
+
+
+; ===========================================================================
+; DANGER ZONE LEARNING  (persistent portal avoidance)
+;
+; When the bot accidentally walks into a portal, it records the last known
+; safe position in conf/portals/<mapID>.json.  On the next run in the same
+; zone, those positions are loaded and treated as hard exclusion zones with
+; radius $SV_DANGER_ZONE_RADIUS.  This builds up over time so each map only
+; needs to be learned once.
+; ===========================================================================
+
+; Returns the path to the danger zone file for the current map
+Func SV_DangerZoneFile()
+    Return @ScriptDir & '\conf\portals\' & $sv_map_id & '.json'
+EndFunc
+
+
+; Load danger zones from file into $sv_danger_zones / $sv_danger_zone_count.
+; Called once per run, right after zone entry.
+Func SV_LoadDangerZones()
+    $sv_danger_zone_count = 0
+    Local $file = SV_DangerZoneFile()
+    If Not FileExists($file) Then Return
+
+    Local $raw  = FileRead($file)
+    If $raw = '' Then Return
+
+    Local $json = _JSON_Parse($raw)
+    If @error Then
+        Warn('[SmartVanquisher] Could not parse danger zone file: ' & $file)
+        Return
+    EndIf
+
+    Local $zones = _JSON_Get($json, 'zones')
+    If Not IsArray($zones) Then Return
+
+    Local $count = UBound($zones)
+    For $i = 0 To $count - 1
+        If $sv_danger_zone_count >= 64 Then ExitLoop
+        $sv_danger_zones[$sv_danger_zone_count][0] = _JSON_Get($zones[$i], 'x')
+        $sv_danger_zones[$sv_danger_zone_count][1] = _JSON_Get($zones[$i], 'y')
+        $sv_danger_zone_count += 1
+    Next
+
+    Info('[SmartVanquisher] Loaded ' & $sv_danger_zone_count & ' danger zone(s) for map ' & $sv_map_id)
+EndFunc
+
+
+; Record a new danger zone at ($x, $y) and save to file.
+; Skips if a zone already exists within $SV_DANGER_ZONE_MERGE_DIST.
+Func SV_LearnDangerZone($x, $y)
+    ; Check for duplicate
+    For $i = 0 To $sv_danger_zone_count - 1
+        If SV_Dist($x, $y, $sv_danger_zones[$i][0], $sv_danger_zones[$i][1]) < $SV_DANGER_ZONE_MERGE_DIST Then
+            SV_DBG('[SmartVanquisher] Danger zone near (' & Round($x) & ',' & Round($y) & ') already known - skipping')
+            Return
+        EndIf
+    Next
+
+    ; Add to runtime array
+    If $sv_danger_zone_count < 64 Then
+        $sv_danger_zones[$sv_danger_zone_count][0] = $x
+        $sv_danger_zones[$sv_danger_zone_count][1] = $y
+        $sv_danger_zone_count += 1
+    EndIf
+
+    Warn('[SmartVanquisher] New danger zone learned at (' & Round($x) & ',' & Round($y) & ') - saving')
+
+    ; Build JSON array from current runtime zones
+    Local $zonesArr[$sv_danger_zone_count]
+    For $i = 0 To $sv_danger_zone_count - 1
+        Local $entry = _JSON_Parse('{}')
+        _JSON_addChangeDelete($entry, '.x', $sv_danger_zones[$i][0])
+        _JSON_addChangeDelete($entry, '.y', $sv_danger_zones[$i][1])
+        $zonesArr[$i] = $entry
+    Next
+
+    Local $root = _JSON_Parse('{}')
+    _JSON_addChangeDelete($root, '.map_id', $sv_map_id)
+    _JSON_addChangeDelete($root, '.zones',  $zonesArr)
+
+    ; Ensure conf/portals/ directory exists
+    Local $dir = @ScriptDir & '\conf\portals'
+    If Not FileExists($dir) Then DirCreate($dir)
+
+    ; Write file
+    Local $fh = FileOpen(SV_DangerZoneFile(), 2)   ; 2 = overwrite
+    If $fh = -1 Then
+        Warn('[SmartVanquisher] Could not write danger zone file')
+        Return
+    EndIf
+    FileWrite($fh, _JSON_Generate($root, True))
+    FileClose($fh)
+EndFunc
 
 
 ; ===========================================================================
