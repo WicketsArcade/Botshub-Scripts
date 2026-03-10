@@ -780,20 +780,19 @@ Func SV_MarkVisitedFrontier(ByRef $key, ByRef $visitedKeys, ByRef $visitedCount,
     Local $cx = Int($parts[1])
     Local $cy = Int($parts[2])
 
-    ; Check all 8 neighbours
-    Local Const $DX[8] = [1,-1,0,0,1,1,-1,-1]
-    Local Const $DY[8] = [0,0,1,-1,1,-1,1,-1]
+    ; Hoisted out of loop (MustDeclareVars requirement)
+    Local $DX[8] = [1,-1,0,0,1,1,-1,-1]
+    Local $DY[8] = [0,0,1,-1,1,-1,1,-1]
     Local $hasUnvisitedNeighbour = False
+    Local $nKey = ''
+    Local $d = 0
 
     For $d = 0 To 7
-        Local $nKey = ($cx + $DX[$d]) & ',' & ($cy + $DY[$d])
+        $nKey = ($cx + $DX[$d]) & ',' & ($cy + $DY[$d])
         If Not SV_IsVisited($nKey, $visitedKeys, $visitedCount) Then
-            ; This cell borders unvisited space - it belongs in the frontier
             $hasUnvisitedNeighbour = True
         Else
-            ; Neighbour is visited - check if it should be removed from frontier
-            ; (it may now be fully surrounded if this was its last unvisited neighbour)
-            SV_UpdateFrontierCell($nKey, $cx + $DX[$d], $cy + $DY[$d], $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $maxCount, $DX, $DY)
+            SV_UpdateFrontierCell($nKey, $cx + $DX[$d], $cy + $DY[$d], $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $maxCount)
         EndIf
     Next
 
@@ -805,11 +804,15 @@ EndFunc
 
 ; Re-evaluate whether a visited cell should be in the frontier.
 ; Called when one of its neighbours just became visited.
-Func SV_UpdateFrontierCell(ByRef $key, $cx, $cy, ByRef $visitedKeys, $visitedCount, ByRef $frontierKeys, ByRef $frontierCount, $maxCount, ByRef $DX, ByRef $DY)
-    ; Check if any neighbour is still unvisited
+Func SV_UpdateFrontierCell(ByRef $key, $cx, $cy, ByRef $visitedKeys, $visitedCount, ByRef $frontierKeys, ByRef $frontierCount, $maxCount)
+    Local $DX2[8] = [1,-1,0,0,1,1,-1,-1]
+    Local $DY2[8] = [0,0,1,-1,1,-1,1,-1]
     Local $stillFrontier = False
+    Local $nKey = ''
+    Local $d = 0
+
     For $d = 0 To 7
-        Local $nKey = ($cx + $DX[$d]) & ',' & ($cy + $DY[$d])
+        $nKey = ($cx + $DX2[$d]) & ',' & ($cy + $DY2[$d])
         If Not SV_IsVisited($nKey, $visitedKeys, $visitedCount) Then
             $stillFrontier = True
             ExitLoop
