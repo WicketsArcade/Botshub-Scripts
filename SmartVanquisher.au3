@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.1.1
+; Version: 1.1.2
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -162,6 +162,13 @@ Func SmartVanquisherFarm()
         Return $PAUSE
     EndIf
 
+    ; ---- Guard: Hard Mode must be active ----------------------------------
+    If Not GetIsHardMode() Then
+        Error('[SmartVanquisher] Not in Hard Mode - enable Hard Mode before entering the zone and press Start.')
+        SV_ClearState()
+        Return $PAUSE
+    EndIf
+
     ; Capture the zone we are currently in
     $sv_map_id = GetMapID()
 
@@ -208,6 +215,18 @@ Func SmartVanquisherFarm()
 
     ; Load any previously learned danger zones (portal entry points) for this map
     SV_LoadDangerZones()
+
+    ; Register the entry portal as a runtime-only danger zone so the bot deflects
+    ; away from it during navigation. Not saved to file - it's detected fresh each run.
+    ; SV_GetPortalAgents already excludes it from the signpost list so re-entry still works.
+    If $sv_entry_portal_found Then
+        If $sv_danger_zone_count < 64 Then
+            $sv_danger_zones[$sv_danger_zone_count][0] = $sv_entry_portal_x
+            $sv_danger_zones[$sv_danger_zone_count][1] = $sv_entry_portal_y
+            $sv_danger_zone_count += 1
+            SV_DBG('[SmartVanquisher] Entry portal registered as runtime danger zone')
+        EndIf
+    EndIf
 
     ; ---- Reset per-run mutable state ------------------------------------
     SV_ResetState()
@@ -342,10 +361,6 @@ EndFunc
 
 Func SV_Run()
     If GetMapID() <> $sv_map_id Then Return $FAIL
-    If Not GetIsHardMode() Then
-        Error('[SmartVanquisher] Not in Hard Mode - enable Hard Mode before entering the zone and press Start.')
-        Return $FAIL
-    EndIf
     If GetAreaVanquished() Then
         Warn('[SmartVanquisher] Zone is already vanquished - pausing.')
         Return $FAIL
@@ -934,38 +949,42 @@ EndFunc
 
 
 ; Load danger zones from file into $sv_danger_zones / $sv_danger_zone_count.
+; File format is one "x,y" coordinate pair per line - simple, no JSON UDF needed.
 ; Called once per run, right after zone entry.
 Func SV_LoadDangerZones()
     $sv_danger_zone_count = 0
     Local $file = SV_DangerZoneFile()
     If Not FileExists($file) Then Return
 
-    Local $raw  = FileRead($file)
-    If $raw = '' Then Return
-
-    Local $json = _JSON_Parse($raw)
-    If @error Then
-        Warn('[SmartVanquisher] Could not parse danger zone file: ' & $file)
+    Local $fh = FileOpen($file, 0)
+    If $fh = -1 Then
+        Warn('[SmartVanquisher] Could not open danger zone file: ' & $file)
         Return
     EndIf
 
-    Local $zones = _JSON_Get($json, 'zones')
-    If Not IsArray($zones) Then Return
-
-    Local $count = UBound($zones)
-    For $i = 0 To $count - 1
+    While Not @error
+        Local $line = FileReadLine($fh)
+        If @error Then ExitLoop
+        $line = StringStripWS($line, 3)
+        If $line = '' Then ContinueLoop
+        Local $parts = StringSplit($line, ',')
+        If $parts[0] <> 2 Then ContinueLoop   ; expect exactly x,y
         If $sv_danger_zone_count >= 64 Then ExitLoop
-        $sv_danger_zones[$sv_danger_zone_count][0] = _JSON_Get($zones[$i], 'x')
-        $sv_danger_zones[$sv_danger_zone_count][1] = _JSON_Get($zones[$i], 'y')
+        $sv_danger_zones[$sv_danger_zone_count][0] = Number($parts[1])
+        $sv_danger_zones[$sv_danger_zone_count][1] = Number($parts[2])
         $sv_danger_zone_count += 1
-    Next
+    WEnd
+    FileClose($fh)
 
-    Info('[SmartVanquisher] Loaded ' & $sv_danger_zone_count & ' danger zone(s) for map ' & $sv_map_id)
+    If $sv_danger_zone_count > 0 Then
+        Info('[SmartVanquisher] Loaded ' & $sv_danger_zone_count & ' danger zone(s) for map ' & $sv_map_id)
+    EndIf
 EndFunc
 
 
 ; Record a new danger zone at ($x, $y) and save to file.
 ; Skips if a zone already exists within $SV_DANGER_ZONE_MERGE_DIST.
+; File format: one "x,y" pair per line.
 Func SV_LearnDangerZone($x, $y)
     ; Check for duplicate
     For $i = 0 To $sv_danger_zone_count - 1
@@ -984,30 +1003,19 @@ Func SV_LearnDangerZone($x, $y)
 
     Warn('[SmartVanquisher] New danger zone learned at (' & Round($x) & ',' & Round($y) & ') - saving')
 
-    ; Build JSON array from current runtime zones
-    Local $zonesArr[$sv_danger_zone_count]
-    For $i = 0 To $sv_danger_zone_count - 1
-        Local $entry = _JSON_Parse('{}')
-        _JSON_addChangeDelete($entry, '.x', $sv_danger_zones[$i][0])
-        _JSON_addChangeDelete($entry, '.y', $sv_danger_zones[$i][1])
-        $zonesArr[$i] = $entry
-    Next
-
-    Local $root = _JSON_Parse('{}')
-    _JSON_addChangeDelete($root, '.map_id', $sv_map_id)
-    _JSON_addChangeDelete($root, '.zones',  $zonesArr)
-
     ; Ensure conf/portals/ directory exists
     Local $dir = @ScriptDir & '\conf\portals'
     If Not FileExists($dir) Then DirCreate($dir)
 
-    ; Write file
+    ; Write all zones to file (overwrite) - one x,y per line
     Local $fh = FileOpen(SV_DangerZoneFile(), 2)   ; 2 = overwrite
     If $fh = -1 Then
         Warn('[SmartVanquisher] Could not write danger zone file')
         Return
     EndIf
-    FileWrite($fh, _JSON_Generate($root, True))
+    For $i = 0 To $sv_danger_zone_count - 1
+        FileWriteLine($fh, $sv_danger_zones[$i][0] & ',' & $sv_danger_zones[$i][1])
+    Next
     FileClose($fh)
 EndFunc
 

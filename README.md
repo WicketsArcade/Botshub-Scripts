@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.1.1  
+**Version:** 1.1.2  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,11 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.1.2
+- **Hard Mode check moved to entry point:** `GetIsHardMode()` now fires in `SmartVanquisherFarm()` before any zone logic runs, not just inside `SV_Run()`. Previously a portal re-entry path could bypass the check entirely, causing the bot to see `GetAreaVanquished() = True` (Normal Mode behaviour) and exit as "success"
+- **Danger zone file format changed to CSV:** The JSON UDF (`_JSON_Parse`/`_JSON_Generate`) was failing to round-trip the written file correctly. Replaced with a simple one `x,y` pair per line format — trivially readable and writable with `FileReadLine`/`FileWriteLine`, no external library needed. Existing `.json` files will be ignored and re-learned automatically
+- **Entry portal registered as runtime danger zone:** On each zone entry, the detected entry portal position is added to `$sv_danger_zones` in memory (but not saved to file). This ensures `SV_DirectionOpen` and `SV_NearAnyPortal` deflect away from the spawn portal during navigation — the root cause of the bot bouncing straight back through it on the first step
 
 ### v1.1.1
 - **Ball-like reflection bouncing:** `SV_PickBounceHeading` now scores candidates with a reflection bonus. ±90° from the blocked heading (the most physically natural bounce) gets +2.0, ±45° and ±135° get +0.5. This biases the bot toward maintaining forward momentum rather than reversing
