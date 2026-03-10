@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.1.0
+; Version: 1.1.1
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -406,6 +406,17 @@ Func SV_BounceRoomba()
     Local $resumeY = 0
     Local $hasResume = False
 
+    ; Recent heading history for ping-pong prevention.
+    ; Circular buffer of the last $HEADING_HISTORY_SIZE headings used.
+    Local Const $HEADING_HISTORY_SIZE = 6
+    Local $headingHistory[$HEADING_HISTORY_SIZE]
+    Local $headingHistoryIdx = 0
+    Local $headingHistoryFull = False
+    ; Initialise buffer to an impossible value so empty slots are ignored
+    For $hhi = 0 To $HEADING_HISTORY_SIZE - 1
+        $headingHistory[$hhi] = 9999.0
+    Next
+
     While IsPlayerAlive() And Not GetAreaVanquished()
 
         If CheckStuck('Roomba', $SV_FARM_DURATION) == $FAIL Then Return $FAIL
@@ -445,7 +456,7 @@ Func SV_BounceRoomba()
             $stepsSinceNewCell += 1
             If $stepsSinceNewCell >= 15 Then
                 SV_DBG('[SmartVanquisher] No new cells in 15 steps - bouncing')
-                $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL)
+                $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull)
                 $stepsSinceNewCell = 0
                 $hasResume = False
                 ContinueLoop
@@ -463,12 +474,17 @@ Func SV_BounceRoomba()
         Else
             If Not SV_DirectionOpen($myX, $myY, $heading, $portals) Then
                 SV_DBG('[SmartVanquisher] Portal ahead - bouncing')
-                $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL)
+                $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull)
                 ContinueLoop
             EndIf
             $targetX = $myX + $SV_BOUNCE_STEP * Cos($heading)
             $targetY = $myY + $SV_BOUNCE_STEP * Sin($heading)
         EndIf
+
+        ; Record this heading into the circular history buffer
+        $headingHistory[$headingHistoryIdx] = $heading
+        $headingHistoryIdx = Mod($headingHistoryIdx + 1, $HEADING_HISTORY_SIZE)
+        If $headingHistoryIdx = 0 Then $headingHistoryFull = True
 
         ; Walk toward waypoint in sub-steps using SV_MoveTo (fast wall detection).
         ; SV_MoveTo gives up after 2 blocked checks (~200ms) vs MoveTo's 14 (~45s).
@@ -549,7 +565,7 @@ Func SV_BounceRoomba()
         If $wallHit Then
             ; Poison the blocked direction's cells so it never scores well again
             SV_PoisonDirection($myX, $myY, $heading, $visitedKeys, $visitedCount, $MAX_VISITED, $CELL)
-            $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL)
+            $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull)
             $stepsSinceNewCell = 0
             $hasResume = False
             ContinueLoop
@@ -559,7 +575,7 @@ Func SV_BounceRoomba()
         If SV_Dist($myX, $myY, $targetX, $targetY) > $SV_BOUNCE_STEP * 1.5 Then
             SV_DBG('[SmartVanquisher] Did not reach waypoint - bouncing')
             SV_PoisonDirection($myX, $myY, $heading, $visitedKeys, $visitedCount, $MAX_VISITED, $CELL)
-            $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL)
+            $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull)
             $stepsSinceNewCell = 0
             $hasResume = False
         EndIf
@@ -572,43 +588,100 @@ EndFunc
 
 
 ; Pick a new heading after a bounce.
-; Sweeps 6 candidates relative to the blocked heading (every 45deg, skipping
-; forward and back), scores each by unvisited cell lookahead, picks best.
-Func SV_PickBounceHeading($myX, $myY, $blockedHeading, ByRef $visitedKeys, $visitedCount, $cellSize)
-    Local Const $PI = 3.14159265358979
-    Local $portals  = SV_GetPortalAgents()
+;
+; Scoring has three components (all combined into a single float score):
+;
+;   1. UNVISITED CELL LOOKAHEAD (0-5)
+;      Count unvisited cells along 5 steps in the candidate direction.
+;      Core coverage bias - prefer heading into unexplored areas.
+;
+;   2. REFLECTION BONUS (+0.0 to +2.0)
+;      A real ball bounces at angle of incidence = angle of reflection.
+;      The ideal reflection off a wall is ~90deg from the blocked heading.
+;      Candidates closer to 90deg get a bonus, further away get less.
+;      This keeps forward momentum rather than reversing.
+;        +-45deg  -> +0.5 bonus  (nearly forward, slight deflection)
+;        +-90deg  -> +2.0 bonus  (ideal reflection, most ball-like)
+;        +-135deg -> +0.5 bonus  (steep deflection, less preferred)
+;        180deg   -> +0.0 bonus  (reverse, no bonus - last resort only)
+;
+;   3. HEADING HISTORY PENALTY (-0.0 to -3.0)
+;      Candidates within 30deg of any recently used heading get a penalty.
+;      Breaks ping-pong: if we just went 90deg and bounce back to 90deg,
+;      that candidate is penalised and a fresh direction scores better.
+;
+Func SV_PickBounceHeading($myX, $myY, $blockedHeading, ByRef $visitedKeys, $visitedCount, $cellSize, ByRef $headingHistory, $headingHistoryFull)
+    Local Const $PI         = 3.14159265358979
+    Local Const $DEG30      = $PI / 6.0       ; 30deg in radians - history penalty threshold
+    Local Const $HISTORY_PENALTY = 3.0        ; score penalty for recently used headings
+    Local Const $PINGPONG_PENALTY = 4.0       ; extra penalty for near-exact reversal of recent heading
+    Local $portals = SV_GetPortalAgents()
 
-    ; Candidates: every 45deg relative to blocked heading, skipping 0 (blocked) and 180 (back)
+    ; Candidates: +-45, +-90, +-135 relative to blocked heading.
+    ; Ordered by reflection quality: 90deg first (most ball-like), then 45, then 135.
+    ; 180 (reverse) is the fallback only - never a scored candidate.
     Local $offsets[6]
-    $offsets[0] =  $PI / 2.0        ;  90 left
-    $offsets[1] = -$PI / 2.0        ;  90 right
-    $offsets[2] =  $PI / 4.0 * 3.0  ; 135 left
-    $offsets[3] = -$PI / 4.0 * 3.0  ; 135 right
-    $offsets[4] =  $PI / 4.0        ;  45 left
-    $offsets[5] = -$PI / 4.0        ;  45 right
+    $offsets[0] =  $PI / 2.0         ;  90 left  - ideal reflection
+    $offsets[1] = -$PI / 2.0         ;  90 right - ideal reflection
+    $offsets[2] =  $PI / 4.0         ;  45 left  - slight deflection
+    $offsets[3] = -$PI / 4.0         ;  45 right - slight deflection
+    $offsets[4] =  $PI * 3.0 / 4.0   ; 135 left  - steep deflection
+    $offsets[5] = -$PI * 3.0 / 4.0   ; 135 right - steep deflection
 
-    Local $bestHeading = SV_WrapAngle($blockedHeading + $PI)  ; fallback: reverse
-    Local $bestScore   = -1
+    ; Reflection bonus by offset magnitude (how ball-like is this bounce?)
+    Local $reflectionBonus[6]
+    $reflectionBonus[0] = 2.0   ;  90 left
+    $reflectionBonus[1] = 2.0   ;  90 right
+    $reflectionBonus[2] = 0.5   ;  45 left
+    $reflectionBonus[3] = 0.5   ;  45 right
+    $reflectionBonus[4] = 0.5   ; 135 left
+    $reflectionBonus[5] = 0.5   ; 135 right
+
+    ; Fallback: reverse direction, with no bonus and will only be used if
+    ; all candidates are blocked by portals or danger zones
+    Local $bestHeading = SV_WrapAngle($blockedHeading + $PI)
+    Local $bestScore   = -9999.0
 
     For $i = 0 To 5
         Local $candidate = SV_WrapAngle($blockedHeading + $offsets[$i])
 
         If Not SV_DirectionOpen($myX, $myY, $candidate, $portals) Then ContinueLoop
 
-        Local $score = 0
+        ; Component 1: unvisited cell lookahead
+        Local $cellScore = 0
         For $step = 1 To 5
-            Local $lx  = $myX + ($step * $cellSize) * Cos($candidate)
-            Local $ly  = $myY + ($step * $cellSize) * Sin($candidate)
-            If Not SV_IsVisited(SV_CellKey($lx, $ly, $cellSize), $visitedKeys, $visitedCount) Then $score += 1
+            Local $lx = $myX + ($step * $cellSize) * Cos($candidate)
+            Local $ly = $myY + ($step * $cellSize) * Sin($candidate)
+            If Not SV_IsVisited(SV_CellKey($lx, $ly, $cellSize), $visitedKeys, $visitedCount) Then $cellScore += 1
         Next
 
-        If $score > $bestScore Then
-            $bestScore   = $score
+        ; Component 2: reflection bonus - prefer staying close to 90deg bounce
+        Local $bonus = $reflectionBonus[$i]
+
+        ; Component 3: heading history penalty - penalise recently used headings
+        Local $histPenalty = 0.0
+        Local $histSize = UBound($headingHistory)
+        For $h = 0 To $histSize - 1
+            If $headingHistory[$h] = 9999.0 Then ContinueLoop   ; empty slot
+            Local $angDiff = Abs(SV_WrapAngle($candidate - $headingHistory[$h]))
+            If $angDiff < $DEG30 Then
+                ; Very close to a recent heading - full penalty
+                $histPenalty = $HISTORY_PENALTY
+            ElseIf $angDiff > ($PI - $DEG30) Then
+                ; Near-exact reversal of a recent heading - ping-pong penalty
+                $histPenalty += $PINGPONG_PENALTY
+            EndIf
+        Next
+
+        Local $totalScore = $cellScore + $bonus - $histPenalty
+
+        If $totalScore > $bestScore Then
+            $bestScore   = $totalScore
             $bestHeading = $candidate
         EndIf
     Next
 
-    SV_DBG('[SmartVanquisher] Bounce: ' & Round($blockedHeading*180/$PI) & 'deg blocked -> new=' & Round($bestHeading*180/$PI) & 'deg (score=' & $bestScore & ')')
+    SV_DBG('[SmartVanquisher] Bounce: ' & Round($blockedHeading*180/$PI) & 'deg blocked -> new=' & Round($bestHeading*180/$PI) & 'deg (score=' & Round($bestScore, 1) & ')')
     Return $bestHeading
 EndFunc
 

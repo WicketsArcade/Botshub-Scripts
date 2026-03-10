@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.1.0  
+**Version:** 1.1.1  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,12 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.1.1
+- **Ball-like reflection bouncing:** `SV_PickBounceHeading` now scores candidates with a reflection bonus. ±90° from the blocked heading (the most physically natural bounce) gets +2.0, ±45° and ±135° get +0.5. This biases the bot toward maintaining forward momentum rather than reversing
+- **Heading history buffer:** A circular buffer of the last 6 headings is tracked in `SV_BounceRoomba`. Candidates within 30° of a recently used heading receive a -3.0 penalty; near-exact reversals of a recent heading receive a -4.0 ping-pong penalty
+- **Reverse (180°) is fallback only:** The reverse direction is no longer a scored candidate — it is only selected if every other direction is blocked by portals or danger zones
+- **Candidate order changed:** Candidates are now tried ±90° first, then ±45°, then ±135° — reflecting the order of physical preference, not arbitrary insertion order
 
 ### v1.1.0
 - **Hard Mode guard:** `GetIsHardMode()` is now checked at the start of every run. If Hard Mode is not active, the bot pauses immediately with a clear error — in Normal Mode `GetAreaVanquished()` always returns True so the bot would exit in ~4 seconds and loop endlessly
