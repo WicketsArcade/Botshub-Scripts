@@ -124,7 +124,7 @@ Global Const $SV_FARM_DURATION         = 120 * 60 * 1000            ; 120 min
 Global Const $SV_POST_COMBAT_WAIT      = 800
 
 ; Set to True to enable verbose navigation/combat logging, False for clean runs
-Global Const $SV_DEBUG                 = False
+Global Const $SV_DEBUG                 = True
 
 ; Maximum death penalty (as negative morale, e.g. -60 = 60% DP) before we
 ; abandon the run instead of re-entering after a wipe. 0 = never retry.
@@ -549,11 +549,7 @@ Func SV_BounceRoomba()
         If $hasFrontier Then
             $distToFrontier = SV_Dist($myX, $myY, $frontierX, $frontierY)
 
-<<<<<<< HEAD
-            If $distToFrontier < $CELL Then
-=======
             If $distToFrontier < $CELL / 4 Then
->>>>>>> d11b64106b777541496b98c053de231cf12baca3
                 SV_DBG('[SmartVanquisher] Frontier target reached - recomputing')
                 $hasFrontier = False
                 $bouncesSinceTarget = 0
