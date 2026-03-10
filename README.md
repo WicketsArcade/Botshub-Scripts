@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.0.9  
+**Version:** 1.1.0  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,9 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.1.0
+- **Hard Mode guard:** `GetIsHardMode()` is now checked at the start of every run. If Hard Mode is not active, the bot pauses immediately with a clear error — in Normal Mode `GetAreaVanquished()` always returns True so the bot would exit in ~4 seconds and loop endlessly
 
 ### v1.0.9
 - **Success now pauses:** `Return $SUCCESS` replaced with `SV_ClearState()` + `Return $PAUSE` — a completed vanquish stops and waits, it never loops into a second run automatically

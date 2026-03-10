@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.0.9
+; Version: 1.1.0
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -342,6 +342,10 @@ EndFunc
 
 Func SV_Run()
     If GetMapID() <> $sv_map_id Then Return $FAIL
+    If Not GetIsHardMode() Then
+        Error('[SmartVanquisher] Not in Hard Mode - enable Hard Mode before entering the zone and press Start.')
+        Return $FAIL
+    EndIf
     If GetAreaVanquished() Then
         Warn('[SmartVanquisher] Zone is already vanquished - pausing.')
         Return $FAIL
