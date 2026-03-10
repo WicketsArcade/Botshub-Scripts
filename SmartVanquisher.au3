@@ -117,6 +117,9 @@ Global Const $SV_FRONTIER_GIVE_UP_BOUNCES = 12
 ; Targets beyond this range are ignored - keeps the target reachable.
 Global Const $SV_FRONTIER_MAX_RANGE = $RANGE_EARSHOT * 10   ; ~10000
 
+; Maximum total run time (ms)
+Global Const $SV_FARM_DURATION         = 120 * 60 * 1000            ; 120 min
+
 ; Pause after each combat encounter (ms)
 Global Const $SV_POST_COMBAT_WAIT      = 800
 
@@ -486,10 +489,40 @@ Func SV_BounceRoomba()
         $heading = $PI / 2.0
     EndIf
 
+    ; --- Loop-scope variables (hoisted to function scope - AutoIt requires this with MustDeclareVars) ---
+    Local $foesToKill     = 0
+    Local $me             = 0
+    Local $myX            = 0.0
+    Local $myY            = 0.0
+    Local $cellKey        = ''
+    Local $distToFrontier = 0.0
+    Local $fKey           = ''
+    Local $fx             = 0.0
+    Local $fy             = 0.0
+    Local $portals        = 0
+    Local $targetX        = 0.0
+    Local $targetY        = 0.0
+    Local $newHeading     = 0.0
+    Local $escX           = 0.0
+    Local $escY           = 0.0
+    Local $combatInterrupted = False
+    Local $wallHit        = False
+    Local $subSteps       = 4
+    Local $dirX           = 0.0
+    Local $dirY           = 0.0
+    Local $lastSafeX      = 0.0
+    Local $lastSafeY      = 0.0
+    Local $fracX          = 0.0
+    Local $fracY          = 0.0
+    Local $escAngle       = 0.0
+    Local $escX2          = 0.0
+    Local $escY2          = 0.0
+    Local $s              = 0
+
     While IsPlayerAlive() And Not SV_ConfirmVanquished()
 
         ; Track the highest foes-to-kill count seen so we can trust a zero later
-        Local $foesToKill = GetFoesToKill()
+        $foesToKill = GetFoesToKill()
         If $foesToKill > $sv_max_foes_seen Then $sv_max_foes_seen = $foesToKill
 
         If CheckStuck('Roomba', $SV_FARM_DURATION) == $FAIL Then Return $FAIL
@@ -504,32 +537,27 @@ Func SV_BounceRoomba()
 
         If SV_CombatCheck() == $FAIL Then Return $FAIL
 
-        Local $me  = GetMyAgent()
-        Local $myX = DllStructGetData($me, 'X')
-        Local $myY = DllStructGetData($me, 'Y')
+        $me  = GetMyAgent()
+        $myX = DllStructGetData($me, 'X')
+        $myY = DllStructGetData($me, 'Y')
 
         ; Mark current cell visited
-        Local $cellKey = SV_CellKey($myX, $myY, $CELL)
+        $cellKey = SV_CellKey($myX, $myY, $CELL)
         SV_MarkVisited($cellKey, $visitedKeys, $visitedCount, $MAX_VISITED)
 
         ; --- Frontier target management ---
-        ; Recompute if: no target, target reached, or too many bounces without progress
         If $hasFrontier Then
-            Local $distToFrontier = SV_Dist($myX, $myY, $frontierX, $frontierY)
+            $distToFrontier = SV_Dist($myX, $myY, $frontierX, $frontierY)
 
-            ; Reached: within one cell of target
             If $distToFrontier < $CELL Then
                 SV_DBG('[SmartVanquisher] Frontier target reached - recomputing')
                 $hasFrontier = False
                 $bouncesSinceTarget = 0
-            ; Give up: too many bounces and haven't closed gap by one cell width
             ElseIf $bouncesSinceTarget >= $SV_FRONTIER_GIVE_UP_BOUNCES And _
                    $distToFrontier > $distAtTargetSet - $CELL Then
                 Warn('[SmartVanquisher] Frontier target (' & Round($frontierX) & ',' & Round($frontierY) & ') unreachable after ' & $bouncesSinceTarget & ' bounces - abandoning')
-                ; Mark as abandoned so we don't re-pick it
-                Local $fKey = SV_CellKey($frontierX, $frontierY, $CELL)
+                $fKey = SV_CellKey($frontierX, $frontierY, $CELL)
                 SV_MarkVisited($fKey, $abandonedKeys, $abandonedCount, $MAX_VISITED)
-                ; Also mark visited so scoring doesn't pull us back here
                 SV_MarkVisited($fKey, $visitedKeys, $visitedCount, $MAX_VISITED)
                 $hasFrontier = False
                 $bouncesSinceTarget = 0
@@ -538,7 +566,6 @@ Func SV_BounceRoomba()
 
         ; Pick new frontier target if needed
         If Not $hasFrontier Then
-            Local $fx, $fy
             If SV_FindFrontierTarget($myX, $myY, $visitedKeys, $visitedCount, $CELL, $abandonedKeys, $abandonedCount, $fx, $fy) Then
                 $frontierX = $fx
                 $frontierY = $fy
@@ -546,19 +573,16 @@ Func SV_BounceRoomba()
                 $distAtTargetSet = SV_Dist($myX, $myY, $frontierX, $frontierY)
                 $bouncesSinceTarget = 0
                 Info('[SmartVanquisher] New frontier target: (' & Round($frontierX) & ',' & Round($frontierY) & ') dist=' & Round($distAtTargetSet))
-                ; Set heading toward frontier target
                 $heading = SV_ATan2($frontierY - $myY, $frontierX - $myX)
                 $hasResume = False
             Else
-                ; No frontier found - zone should be covered
                 SV_DBG('[SmartVanquisher] No frontier cells found - zone should be covered')
                 ContinueLoop
             EndIf
         EndIf
 
         ; Determine next waypoint
-        Local $portals = SV_GetPortalAgents()
-        Local $targetX, $targetY
+        $portals = SV_GetPortalAgents()
         If $hasResume Then
             $targetX   = $resumeX
             $targetY   = $resumeY
@@ -567,21 +591,20 @@ Func SV_BounceRoomba()
         Else
             If Not SV_DirectionOpen($myX, $myY, $heading, $portals) Then
                 SV_DBG('[SmartVanquisher] Portal ahead - bouncing')
-                Local $newHeading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull, $frontierX, $frontierY, $hasFrontier)
+                $newHeading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull, $frontierX, $frontierY, $hasFrontier)
                 If $newHeading = $heading Then
                     $portalBlockedCount += 1
                     If $portalBlockedCount >= 4 Then
-                        Warn('[SmartVanquisher] Portal-caged (' & $portalBlockedCount & ' consecutive) - retreating to last safe position')
-                        Local $lastSafeX2 = $myX, $lastSafeY2 = $myY   ; use current as safe fallback
-                        TryToGetUnstuck($lastSafeX2, $lastSafeY2, 8000)
-                        $hasFrontier        = False   ; recompute from new position
+                        Warn('[SmartVanquisher] Portal-caged (' & $portalBlockedCount & ' consecutive) - retreating')
+                        TryToGetUnstuck($myX, $myY, 8000)
+                        $hasFrontier        = False
                         $portalBlockedCount = 0
                         $wallOnStep1Count   = 0
                         $hasResume          = False
                         ContinueLoop
                     EndIf
-                    Local $escX = $myX + 300 * Cos($newHeading)
-                    Local $escY = $myY + 300 * Sin($newHeading)
+                    $escX = $myX + 300 * Cos($newHeading)
+                    $escY = $myY + 300 * Sin($newHeading)
                     SV_MoveTo($escX, $escY, 3)
                 Else
                     $portalBlockedCount = 0
@@ -600,13 +623,13 @@ Func SV_BounceRoomba()
         If $headingHistoryIdx = 0 Then $headingHistoryFull = True
 
         ; Walk toward waypoint in sub-steps
-        Local $combatInterrupted = False
-        Local $wallHit           = False
-        Local $subSteps          = 4
-        Local $dirX  = ($targetX - $myX)
-        Local $dirY  = ($targetY - $myY)
-        Local $lastSafeX = $myX
-        Local $lastSafeY = $myY
+        $combatInterrupted = False
+        $wallHit           = False
+        $subSteps          = 4
+        $dirX  = ($targetX - $myX)
+        $dirY  = ($targetY - $myY)
+        $lastSafeX = $myX
+        $lastSafeY = $myY
 
         For $s = 1 To $subSteps
             If Not IsPlayerAlive() Then ExitLoop
@@ -621,8 +644,8 @@ Func SV_BounceRoomba()
                 ExitLoop
             EndIf
 
-            Local $fracX = $myX + ($dirX * $s / $subSteps)
-            Local $fracY = $myY + ($dirY * $s / $subSteps)
+            $fracX = $myX + ($dirX * $s / $subSteps)
+            $fracY = $myY + ($dirY * $s / $subSteps)
 
             If Not SV_MoveTo($fracX, $fracY) Then
                 If GetMapID() <> $sv_map_id Then
@@ -671,7 +694,7 @@ Func SV_BounceRoomba()
             If SV_CombatCheck() == $FAIL Then Return $FAIL
             $wallOnStep1Count   = 0
             $portalBlockedCount = 0
-            $hasFrontier        = False   ; recompute target after combat repositioning
+            $hasFrontier        = False
             ContinueLoop
         EndIf
 
@@ -679,13 +702,13 @@ Func SV_BounceRoomba()
             $bouncesSinceTarget += 1
             If $wallOnStep1Count >= 6 Then
                 Warn('[SmartVanquisher] Cornered (' & $wallOnStep1Count & ' consecutive step-1 walls) - calling TryToGetUnstuck')
-                Local $escAngle = (Random(0, 7, 1) * $PI / 4.0)
-                Local $escX2 = $myX + $RANGE_EARSHOT * 3 * Cos($escAngle)
-                Local $escY2 = $myY + $RANGE_EARSHOT * 3 * Sin($escAngle)
+                $escAngle = (Random(0, 7, 1) * $PI / 4.0)
+                $escX2 = $myX + $RANGE_EARSHOT * 3 * Cos($escAngle)
+                $escY2 = $myY + $RANGE_EARSHOT * 3 * Sin($escAngle)
                 TryToGetUnstuck($escX2, $escY2, 8000)
                 $heading            = $escAngle
                 $wallOnStep1Count   = 0
-                $hasFrontier        = False   ; recompute from new position after unstuck
+                $hasFrontier        = False
                 $hasResume          = False
                 ContinueLoop
             EndIf
