@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.2.0
+; Version: 1.2.1
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -414,6 +414,7 @@ Func SV_BounceRoomba()
 
     Local $stepsSinceNewCell = 0
     Local $lastCellCount     = 0
+    Local $wallOnStep1Count  = 0   ; consecutive wall-on-sub-step-1 hits - detects physical corner
 
     ; Saved waypoint - resume here after combat interrupts a step
     Local $resumeX = 0
@@ -546,6 +547,11 @@ Func SV_BounceRoomba()
                     Return $FAIL
                 EndIf
                 SV_DBG('[SmartVanquisher] Wall hit at sub-step ' & $s & ' - bouncing')
+                If $s = 1 Then
+                    $wallOnStep1Count += 1
+                Else
+                    $wallOnStep1Count = 0
+                EndIf
                 $wallHit = True
                 ExitLoop
             EndIf
@@ -578,10 +584,27 @@ Func SV_BounceRoomba()
         If $combatInterrupted Then
             If SV_CombatCheck() == $FAIL Then Return $FAIL
             $stepsSinceNewCell = 0   ; don't penalise standing still during combat
+            $wallOnStep1Count  = 0   ; combat means we moved, not stuck
             ContinueLoop
         EndIf
 
         If $wallHit Then
+            ; Cornered detection: if we hit a wall on sub-step 1 many times in a row
+            ; we are physically wedged in a corner and scoring can't help us escape.
+            If $wallOnStep1Count >= 6 Then
+                Warn('[SmartVanquisher] Cornered (' & $wallOnStep1Count & ' consecutive step-1 walls) - calling TryToGetUnstuck')
+                ; Pick a random escape target well away from current position
+                Local $escAngle = (Random(0, 7, 1) * 3.14159265358979 / 4.0)   ; random 45deg increment
+                Local $escX = $myX + $RANGE_EARSHOT * 3 * Cos($escAngle)
+                Local $escY = $myY + $RANGE_EARSHOT * 3 * Sin($escAngle)
+                TryToGetUnstuck($escX, $escY, 8000)
+                ; Reset heading to the escape angle so we don't immediately re-corner
+                $heading = $escAngle
+                $wallOnStep1Count = 0
+                $stepsSinceNewCell = 0
+                $hasResume = False
+                ContinueLoop
+            EndIf
             ; Poison the blocked direction's cells so it never scores well again
             SV_PoisonDirection($myX, $myY, $heading, $visitedKeys, $visitedCount, $MAX_VISITED, $CELL)
             $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull)
@@ -599,6 +622,7 @@ Func SV_BounceRoomba()
             $hasResume = False
         EndIf
 
+        $wallOnStep1Count = 0   ; clean step - definitely not cornered
         RandomSleep(80)
     WEnd
 

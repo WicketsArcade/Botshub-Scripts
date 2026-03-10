@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.2.0  
+**Version:** 1.2.1  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,9 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.2.1
+- **Cornered detection:** Tracks consecutive wall-hits on sub-step 1 (meaning the bot can't move even 250 units in any direction). After 6 in a row it declares itself cornered, calls `TryToGetUnstuck` toward a random escape target 3000 units away, resets heading to the escape angle, and clears the waypoint. This handles the case where the bounce scoring cycles through all headings but every one hits an immediate wall — the visited-cell map is all poisoned and no scored heading can escape the corner
 
 ### v1.2.0
 - **Wipe handling completely rewritten:** GW auto-respawns the party at the nearest resurrection shrine after a full wipe — no re-entry needed. The bot now simply waits for the respawn and resumes the run from the shrine. Two paths:
