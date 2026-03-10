@@ -368,9 +368,9 @@ EndFunc
 Func SV_ConfirmVanquished()
     Local $me = GetMyAgent()
     If CountFoesInRangeOfAgent($me, $RANGE_EARSHOT) > 0 Then Return False
-    If Not SV_ConfirmVanquished() Then Return False
+    If Not GetAreaVanquished() Then Return False
     Sleep(1500)
-    If Not SV_ConfirmVanquished() Then Return False
+    If Not GetAreaVanquished() Then Return False
     Return True
 EndFunc
 

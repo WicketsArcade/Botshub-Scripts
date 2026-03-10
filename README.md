@@ -137,6 +137,9 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 
 ## Changelog
 
+### v1.2.4 (hotfix)
+- **Fixed infinite recursion in `SV_ConfirmVanquished`:** The greedy replacement of all `GetAreaVanquished()` calls also replaced the two raw calls *inside* the new helper itself, causing it to call itself recursively and hang the bot at startup. The helper now correctly calls `GetAreaVanquished()` internally for its two reads
+
 ### v1.2.4
 - **Fixed false vanquish detection:** `GetFoesToKill()` returns 0 on any memory read failure (null pointer in the chain, freed agent struct during heavy combat — the source of the frequent "Tried to access an invalid address" log entries). This made `GetAreaVanquished()` fire a false positive mid-combat and exit the run prematurely. Fixed with a new `SV_ConfirmVanquished()` wrapper that: (1) checks there are no foes in earshot, (2) reads `GetFoesToKill()` twice 1.5s apart and requires both to be 0. All three `GetAreaVanquished()` call sites replaced
 
