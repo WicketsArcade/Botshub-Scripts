@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.1.4  
+**Version:** 1.1.5  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,10 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.1.5
+- **Danger zone radius reduced to 650 units:** The learned portal at (19800, 11176) is only 554 units from spawn. Any radius above ~650 causes the exclusion bubble to cover the entire spawn area, blocking all candidate headings. 650 is the minimum value that reliably deflects a moving bot without paralyzing it at spawn
+- **Escape move when heading doesn't change:** When `SV_PickBounceHeading` returns the same heading it was given (meaning all candidates were equally bad and the fallback didn't change anything), the bot now attempts a small 300-unit `SV_MoveTo` in that direction to physically shift its position before re-evaluating — prevents infinite tight-loop re-evaluation from the same spot
 
 ### v1.1.4
 - **Removed entry portal from danger zones:** v1.1.2 mistakenly added the entry portal as a runtime danger zone to deflect the bot away from it. Since spawn can be as close as ~500 units to the entry portal, the 1200-unit exclusion bubble covered the entire spawn area, blocking all candidate headings and causing infinite ping-pong. The entry portal was already correctly handled by `SV_GetPortalAgents()` stripping it from the signpost list — no danger zone needed

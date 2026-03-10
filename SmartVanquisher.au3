@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.1.4
+; Version: 1.1.5
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -86,8 +86,8 @@ Global Const $SV_BOUNCE_CELL_SIZE      = $RANGE_EARSHOT             ; ~1000
 Global Const $SV_PORTAL_SAFE_DIST      = $RANGE_EARSHOT * 1.5       ; ~1500
 
 ; Exclusion radius around a learned danger zone (portal entry point)
-; Keep this equal to EARSHOT - a 2x radius blocks the entire spawn in narrow corridors
-Global Const $SV_DANGER_ZONE_RADIUS    = $RANGE_EARSHOT * 1.2       ; ~1200
+; Must be < distance from spawn to nearest portal to avoid blocking all directions at startup
+Global Const $SV_DANGER_ZONE_RADIUS    = 650                         ; ~650 units
 
 ; Minimum distance between two danger zones - prevents duplicate entries
 Global Const $SV_DANGER_ZONE_MERGE_DIST = 500
@@ -482,7 +482,17 @@ Func SV_BounceRoomba()
         Else
             If Not SV_DirectionOpen($myX, $myY, $heading, $portals) Then
                 SV_DBG('[SmartVanquisher] Portal ahead - bouncing')
-                $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull)
+                Local $newHeading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull)
+                ; If we got a least-bad emergency heading, attempt to physically move in it
+                ; so our position shifts and the direction opens up. Without moving, we just
+                ; re-evaluate from the same spot forever.
+                If $newHeading = $heading Then
+                    ; Heading didn't change at all - force a small step to escape
+                    Local $escX = $myX + 300 * Cos($newHeading)
+                    Local $escY = $myY + 300 * Sin($newHeading)
+                    SV_MoveTo($escX, $escY, 3)
+                EndIf
+                $heading = $newHeading
                 ContinueLoop
             EndIf
             $targetX = $myX + $SV_BOUNCE_STEP * Cos($heading)
