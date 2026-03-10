@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.2.2  
+**Version:** 1.2.4  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,12 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.2.4
+- **Fixed false vanquish detection:** `GetFoesToKill()` returns 0 on any memory read failure (null pointer in the chain, freed agent struct during heavy combat — the source of the frequent "Tried to access an invalid address" log entries). This made `GetAreaVanquished()` fire a false positive mid-combat and exit the run prematurely. Fixed with a new `SV_ConfirmVanquished()` wrapper that: (1) checks there are no foes in earshot, (2) reads `GetFoesToKill()` twice 1.5s apart and requires both to be 0. All three `GetAreaVanquished()` call sites replaced
+
+### v1.2.3
+- **Clearer success/failure messaging:** On a successful vanquish the log now says "Zone vanquished - run complete!" clearly distinguishable from a failed run. Previously both paths logged ambiguously and BotsHub's own "Run failed" timer label was showing even on successful vanquishes (it fires for any `$PAUSE` return regardless of outcome — that is a BotsHub framework label outside our control)
 
 ### v1.2.2
 - **Combat loop no longer aborts on death:** `SV_CombatLoop` was returning `$FAIL` when `IsPlayerDead()` fired mid-combat, which propagated straight to `SmartVanquisherFarm` as a run failure — completely bypassing the `SV_WaitUntilAlive` shrine-respawn logic added in v1.2.0. Now both `IsPlayerDead` and `IsPlayerAndPartyWiped` in the combat loop do `ExitLoop` instead, returning `$SUCCESS` back to the main roomba loop which then hits the death handler on the next iteration and waits for respawn

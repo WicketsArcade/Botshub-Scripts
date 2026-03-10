@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.2.2
+; Version: 1.2.4
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -248,16 +248,14 @@ Func SmartVanquisherFarm()
         EndIf
     EndIf
 
-    ; Always pause after a failed run - don't retry automatically.
-    ; A vanquish run requires a clean start from the correct outpost and position.
-    If $result <> $SUCCESS Then
-        Warn('[SmartVanquisher] Run ended - pausing. Return to your starting outpost and press Start to try again.')
-        SV_ClearState()
-        Return $PAUSE
+    SV_ClearState()
+
+    If $result = $SUCCESS Then
+        Info('[SmartVanquisher] Zone vanquished - run complete! Press Start to vanquish another zone.')
+    Else
+        Warn('[SmartVanquisher] Run ended without vanquish - pausing. Return to your starting zone and press Start.')
     EndIf
 
-    Info('[SmartVanquisher] Zone vanquished - run complete!')
-    SV_ClearState()
     Return $PAUSE
 EndFunc
 
@@ -358,15 +356,34 @@ EndFunc
 ; TOP-LEVEL RUN LOGIC
 ; ===========================================================================
 
+; ===========================================================================
+; VANQUISH CONFIRMATION
+; ===========================================================================
+
+; GetFoesToKill() returns 0 on memory read failure (null pointer, freed agent
+; struct during heavy combat), which makes SV_ConfirmVanquished() fire a false
+; positive.  This wrapper confirms the zone is actually clear by:
+;   1. Checking there are no foes currently in earshot
+;   2. Reading GetFoesToKill() twice 1.5s apart - both must be 0
+Func SV_ConfirmVanquished()
+    Local $me = GetMyAgent()
+    If CountFoesInRangeOfAgent($me, $RANGE_EARSHOT) > 0 Then Return False
+    If Not SV_ConfirmVanquished() Then Return False
+    Sleep(1500)
+    If Not SV_ConfirmVanquished() Then Return False
+    Return True
+EndFunc
+
+
 Func SV_Run()
     If GetMapID() <> $sv_map_id Then Return $FAIL
-    If GetAreaVanquished() Then
+    If SV_ConfirmVanquished() Then
         Warn('[SmartVanquisher] Zone is already vanquished - pausing.')
         Return $FAIL
     EndIf
     Info('[SmartVanquisher] Starting bounce roomba')
     Local $result = SV_BounceRoomba()
-    If GetAreaVanquished() Then
+    If SV_ConfirmVanquished() Then
         Info('[SmartVanquisher] Zone vanquished!')
         Return $SUCCESS
     EndIf
@@ -432,7 +449,7 @@ Func SV_BounceRoomba()
         $headingHistory[$hhi] = 9999.0
     Next
 
-    While IsPlayerAlive() And Not GetAreaVanquished()
+    While IsPlayerAlive() And Not SV_ConfirmVanquished()
 
         If CheckStuck('Roomba', $SV_FARM_DURATION) == $FAIL Then Return $FAIL
         ; Death / wipe handling
