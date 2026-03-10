@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.3.1
+; Version: 1.4.0
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -95,8 +95,15 @@ Global Const $SV_BOUNCE_STEP           = $RANGE_EARSHOT             ; ~1000
 ; Aggro scan range - stop moving and fight if foes within this distance
 Global Const $SV_AGGRO_RANGE           = $RANGE_EARSHOT * 2         ; ~2000
 
-; Cell size for visited-area tracking
-Global Const $SV_BOUNCE_CELL_SIZE      = $RANGE_EARSHOT             ; ~1000
+; Cell size for visited-area tracking.
+; Smaller = finer coverage resolution, fewer enemies fall through gaps.
+; At 500 units a step covers ~2 cells so the visited set grows faster -
+; MAX_VISITED and GIVE_UP_BOUNCES are scaled accordingly.
+Global Const $SV_BOUNCE_CELL_SIZE      = 500                         ; ~500 units
+
+; Radius used to confirm a cell is clear of enemies.
+; 1.5x cell size catches foes near the edge of an adjacent cell.
+Global Const $SV_CLEAR_CHECK_RADIUS    = $SV_BOUNCE_CELL_SIZE * 1.5 ; ~750 units
 
 ; Portal exclusion radius - don't step toward a portal within this range
 Global Const $SV_PORTAL_SAFE_DIST      = $RANGE_EARSHOT * 0.8       ; ~800
@@ -109,9 +116,9 @@ Global Const $SV_DANGER_ZONE_RADIUS    = 650                         ; ~650 unit
 Global Const $SV_DANGER_ZONE_MERGE_DIST = 500
 
 ; Maximum bounces toward a frontier target before declaring it unreachable.
-; If we can't close the gap by one cell width in this many bounces, abandon
-; the target, mark it visited, and pick the next nearest frontier cell.
-Global Const $SV_FRONTIER_GIVE_UP_BOUNCES = 12
+; Scaled up from 12 to 20 because at 500-unit cells a step covers ~2 cells,
+; so more bounces are needed to close the same world-space gap.
+Global Const $SV_FRONTIER_GIVE_UP_BOUNCES = 20
 
 ; How far ahead we look when picking a frontier target (GW units).
 ; Targets beyond this range are ignored - keeps the target reachable.
@@ -447,11 +454,17 @@ EndFunc
 Func SV_BounceRoomba()
     Local Const $PI      = 3.14159265358979
     Local Const $CELL    = $SV_BOUNCE_CELL_SIZE
-    Local Const $MAX_VISITED = 10000  ; cap on visited cell tracking
+    Local Const $MAX_VISITED = 40000  ; raised from 10000 - 500-unit cells grow set ~4x faster
 
-    ; Visited cell registry - parallel key/value arrays
+    ; Visited cell registry - sorted for O(log n) binary search
     Local $visitedKeys[$MAX_VISITED]
     Local $visitedCount = 0
+
+    ; Confirmed-clear registry - cells where foes=0 was verified while inside.
+    ; Sorted for O(log n) binary search. Frontier prefers targeting uncleared
+    ; visited cells before purely unvisited ones.
+    Local $clearedKeys[$MAX_VISITED]
+    Local $clearedCount = 0
 
     ; Incremental frontier set - cells that are visited but have at least one
     ; unvisited 8-directional neighbour. Maintained in sync with visitedKeys so
@@ -501,6 +514,7 @@ Func SV_BounceRoomba()
     Local $myX            = 0.0
     Local $myY            = 0.0
     Local $cellKey        = ''
+    Local $isClear        = False
     Local $distToFrontier = 0.0
     Local $fKey           = ''
     Local $fx             = 0.0
@@ -551,6 +565,15 @@ Func SV_BounceRoomba()
         $cellKey = SV_CellKey($myX, $myY, $CELL)
         SV_MarkVisitedFrontier($cellKey, $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $MAX_VISITED, $CELL)
 
+        ; Confirmed-clear check: if no foes within clear radius, mark this cell cleared
+        If Not SV_IsVisitedBSearch($cellKey, $clearedKeys, $clearedCount) Then
+            $isClear = (CountFoesInRangeOfAgent($me, $SV_CLEAR_CHECK_RADIUS) = 0)
+            If $isClear Then
+                SV_MarkVisitedSorted($cellKey, $clearedKeys, $clearedCount, $MAX_VISITED)
+                SV_DBG('[SmartVanquisher] Cell (' & Round($myX) & ',' & Round($myY) & ') confirmed clear')
+            EndIf
+        EndIf
+
         ; --- Frontier target management ---
         If $hasFrontier Then
             $distToFrontier = SV_Dist($myX, $myY, $frontierX, $frontierY)
@@ -574,7 +597,7 @@ Func SV_BounceRoomba()
 
         ; Pick new frontier target if needed
         If Not $hasFrontier Then
-            If SV_FindFrontierTarget($myX, $myY, $frontierKeys, $frontierCount, $abandonedKeys, $abandonedCount, $CELL, $fx, $fy) Then
+            If SV_FindFrontierTarget($myX, $myY, $frontierKeys, $frontierCount, $visitedKeys, $visitedCount, $clearedKeys, $clearedCount, $abandonedKeys, $abandonedCount, $CELL, $fx, $fy) Then
                 $frontierX = $fx
                 $frontierY = $fy
                 $hasFrontier = True
@@ -763,13 +786,10 @@ EndFunc
 ;     if fully surrounded.  If the neighbour is unvisited, add the current
 ;     cell to the frontier (it borders unexplored space).
 Func SV_MarkVisitedFrontier(ByRef $key, ByRef $visitedKeys, ByRef $visitedCount, ByRef $frontierKeys, ByRef $frontierCount, $maxCount, $cellSize)
-    If SV_IsVisited($key, $visitedKeys, $visitedCount) Then Return
+    If SV_IsVisitedBSearch($key, $visitedKeys, $visitedCount) Then Return
 
-    ; Add to visited
-    If $visitedCount < $maxCount Then
-        $visitedKeys[$visitedCount] = $key
-        $visitedCount += 1
-    EndIf
+    ; Add to visited (sorted insert for O(log n) lookup)
+    SV_MarkVisitedSorted($key, $visitedKeys, $visitedCount, $maxCount)
 
     ; Remove from frontier (it's now fully interior if all neighbours visited)
     SV_RemoveFromFrontier($key, $frontierKeys, $frontierCount)
@@ -789,7 +809,7 @@ Func SV_MarkVisitedFrontier(ByRef $key, ByRef $visitedKeys, ByRef $visitedCount,
 
     For $d = 0 To 7
         $nKey = ($cx + $DX[$d]) & ',' & ($cy + $DY[$d])
-        If Not SV_IsVisited($nKey, $visitedKeys, $visitedCount) Then
+        If Not SV_IsVisitedBSearch($nKey, $visitedKeys, $visitedCount) Then
             $hasUnvisitedNeighbour = True
         Else
             SV_UpdateFrontierCell($nKey, $cx + $DX[$d], $cy + $DY[$d], $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $maxCount)
@@ -813,7 +833,7 @@ Func SV_UpdateFrontierCell(ByRef $key, $cx, $cy, ByRef $visitedKeys, $visitedCou
 
     For $d = 0 To 7
         $nKey = ($cx + $DX2[$d]) & ',' & ($cy + $DY2[$d])
-        If Not SV_IsVisited($nKey, $visitedKeys, $visitedCount) Then
+        If Not SV_IsVisitedBSearch($nKey, $visitedKeys, $visitedCount) Then
             $stillFrontier = True
             ExitLoop
         EndIf
@@ -854,14 +874,20 @@ EndFunc
 ; ===========================================================================
 ; FRONTIER TARGET SELECTION  (O(f) - scans frontier set only)
 ;
-; The frontier set is maintained incrementally so this function no longer
-; needs to scan all visited cells or check neighbours. It just finds the
-; nearest non-abandoned entry in the frontier set.
+; Priority order:
+;   1. Visited but NOT yet confirmed clear (enemies may be present)
+;   2. Purely unvisited frontier cells
+;
+; Abandoned cells are skipped in both passes.
 ; ===========================================================================
 
-Func SV_FindFrontierTarget($myX, $myY, ByRef $frontierKeys, $frontierCount, ByRef $abandonedKeys, $abandonedCount, $cellSize, ByRef $outX, ByRef $outY)
-    Local $bestDist = $SV_FRONTIER_MAX_RANGE + 1
-    Local $found    = False
+Func SV_FindFrontierTarget($myX, $myY, ByRef $frontierKeys, $frontierCount, ByRef $visitedKeys, $visitedCount, ByRef $clearedKeys, $clearedCount, ByRef $abandonedKeys, $abandonedCount, $cellSize, ByRef $outX, ByRef $outY)
+    Local $bestDist      = $SV_FRONTIER_MAX_RANGE + 1
+    Local $bestDistClear = $SV_FRONTIER_MAX_RANGE + 1
+    Local $found         = False
+    Local $foundClear    = False
+    Local $clearX        = 0.0
+    Local $clearY        = 0.0
 
     For $i = 0 To $frontierCount - 1
         Local $key = $frontierKeys[$i]
@@ -877,6 +903,20 @@ Func SV_FindFrontierTarget($myX, $myY, ByRef $frontierKeys, $frontierCount, ByRe
         Local $wy = (Int($parts[2]) * $cellSize) + ($cellSize / 2.0)
 
         Local $dist = SV_Dist($myX, $myY, $wx, $wy)
+
+        ; Priority 1: visited but not yet confirmed clear - enemies may be hiding here
+        If SV_IsVisitedBSearch($key, $visitedKeys, $visitedCount) And _
+           Not SV_IsVisitedBSearch($key, $clearedKeys, $clearedCount) Then
+            If $dist < $bestDistClear Then
+                $bestDistClear = $dist
+                $clearX        = $wx
+                $clearY        = $wy
+                $foundClear    = True
+            EndIf
+            ContinueLoop
+        EndIf
+
+        ; Priority 2: unvisited frontier cell
         If $dist < $bestDist Then
             $bestDist = $dist
             $outX     = $wx
@@ -884,6 +924,13 @@ Func SV_FindFrontierTarget($myX, $myY, ByRef $frontierKeys, $frontierCount, ByRe
             $found    = True
         EndIf
     Next
+
+    ; Return uncleared visited cell first if one exists
+    If $foundClear Then
+        $outX = $clearX
+        $outY = $clearY
+        Return True
+    EndIf
 
     Return $found
 EndFunc
@@ -979,7 +1026,7 @@ Func SV_PickBounceHeading($myX, $myY, $blockedHeading, ByRef $visitedKeys, $visi
         For $step = 1 To 5
             Local $lx = $myX + ($step * $cellSize) * Cos($candidate)
             Local $ly = $myY + ($step * $cellSize) * Sin($candidate)
-            If Not SV_IsVisited(SV_CellKey($lx, $ly, $cellSize), $visitedKeys, $visitedCount) Then $cellScore += 1
+            If Not SV_IsVisitedBSearch(SV_CellKey($lx, $ly, $cellSize), $visitedKeys, $visitedCount) Then $cellScore += 1
         Next
 
         ; Component 2: reflection bonus - prefer staying close to 90deg bounce
@@ -1050,6 +1097,49 @@ Func SV_CellKey($x, $y, $cellSize)
 EndFunc
 
 
+; Insert $key into a sorted array (insertion sort - maintains sort order for binary search)
+Func SV_MarkVisitedSorted(ByRef $key, ByRef $keys, ByRef $count, $maxCount)
+    If SV_IsVisitedBSearch($key, $keys, $count) Then Return
+    If $count >= $maxCount Then Return
+    ; Find insertion position via binary search
+    Local $lo = 0, $hi = $count
+    While $lo < $hi
+        Local $mid = Int(($lo + $hi) / 2)
+        If $keys[$mid] < $key Then
+            $lo = $mid + 1
+        Else
+            $hi = $mid
+        EndIf
+    WEnd
+    ; Shift right to make room
+    Local $i = 0
+    For $i = $count To $lo + 1 Step -1
+        $keys[$i] = $keys[$i - 1]
+    Next
+    $keys[$lo] = $key
+    $count += 1
+EndFunc
+
+
+; O(log n) existence check via binary search on sorted array
+Func SV_IsVisitedBSearch(ByRef $key, ByRef $keys, $count)
+    If $count = 0 Then Return False
+    Local $lo = 0, $hi = $count - 1
+    While $lo <= $hi
+        Local $mid = Int(($lo + $hi) / 2)
+        If $keys[$mid] = $key Then Return True
+        If $keys[$mid] < $key Then
+            $lo = $mid + 1
+        Else
+            $hi = $mid - 1
+        EndIf
+    WEnd
+    Return False
+EndFunc
+
+
+; Legacy linear wrapper - kept for abandoned/frontier sets which are small
+; and use swap-with-last removal (can't maintain sort order)
 Func SV_MarkVisited(ByRef $key, ByRef $keys, ByRef $count, $maxCount)
     If SV_IsVisited($key, $keys, $count) Then Return
     If $count < $maxCount Then
