@@ -549,7 +549,11 @@ Func SV_BounceRoomba()
         If $hasFrontier Then
             $distToFrontier = SV_Dist($myX, $myY, $frontierX, $frontierY)
 
+<<<<<<< HEAD
             If $distToFrontier < $CELL Then
+=======
+            If $distToFrontier < $CELL / 4 Then
+>>>>>>> d11b64106b777541496b98c053de231cf12baca3
                 SV_DBG('[SmartVanquisher] Frontier target reached - recomputing')
                 $hasFrontier = False
                 $bouncesSinceTarget = 0
@@ -610,9 +614,11 @@ Func SV_BounceRoomba()
                     $portalBlockedCount = 0
                 EndIf
                 $heading = $newHeading
-                ContinueLoop
+                ; Fall through to movement with the new heading - do NOT ContinueLoop here
+                ; or the bot will spin forever rechecking portals without ever moving
+            Else
+                $portalBlockedCount = 0   ; clean direction - reset cage counter
             EndIf
-            $portalBlockedCount = 0
             $targetX = $myX + $SV_BOUNCE_STEP * Cos($heading)
             $targetY = $myY + $SV_BOUNCE_STEP * Sin($heading)
         EndIf
