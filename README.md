@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.2.4  
+**Version:** 1.2.5  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -136,6 +136,9 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.2.5
+- **Fixed crash false-positive vanquish:** When the GW client crashes, all memory reads return 0 — including `GetFoesToKill()`. The double-read in `SV_ConfirmVanquished` was not sufficient because both reads still return 0 after a crash, 1.5s apart. Fixed by tracking `$sv_max_foes_seen` — the highest `GetFoesToKill()` value seen during the run. `SV_ConfirmVanquished` now requires this to be `> 0` before trusting any zero reading. A client crash mid-run will never trigger a false vanquish because the bot never saw the foe counter count down from a real value. Reset in `SV_ClearState` between runs
 
 ### v1.2.4 (hotfix)
 - **Fixed infinite recursion in `SV_ConfirmVanquished`:** The greedy replacement of all `GetAreaVanquished()` calls also replaced the two raw calls *inside* the new helper itself, causing it to call itself recursively and hang the bot at startup. The helper now correctly calls `GetAreaVanquished()` internally for its two reads

@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.2.4
+; Version: 1.2.5
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -141,6 +141,7 @@ Global $sv_entry_portal_found = False
 ; The exclusion radius $SV_DANGER_ZONE_RADIUS is applied at check time.
 Global $sv_danger_zones[64][2]   ; [index][0=x, 1=y]
 Global $sv_danger_zone_count = 0
+Global $sv_max_foes_seen = 0   ; highest GetFoesToKill() reading this run - must be >0 to trust a zero
 
 ; ===========================================================================
 ; ENTRY POINT
@@ -278,6 +279,7 @@ Func SV_ClearState()
     $sv_entry_y             = 0.0
     $sv_entry_portal_found  = False
     $sv_danger_zone_count   = 0
+    $sv_max_foes_seen = 0
 EndFunc
 
 
@@ -366,6 +368,11 @@ EndFunc
 ;   1. Checking there are no foes currently in earshot
 ;   2. Reading GetFoesToKill() twice 1.5s apart - both must be 0
 Func SV_ConfirmVanquished()
+    ; Never trust a zero if we never saw a non-zero count this run.
+    ; GetFoesToKill() returns 0 on memory read failure (process crash,
+    ; freed struct) - requiring a prior positive reading rules out both
+    ; startup false positives and client-crash false positives.
+    If $sv_max_foes_seen = 0 Then Return False
     Local $me = GetMyAgent()
     If CountFoesInRangeOfAgent($me, $RANGE_EARSHOT) > 0 Then Return False
     If Not GetAreaVanquished() Then Return False
@@ -450,6 +457,10 @@ Func SV_BounceRoomba()
     Next
 
     While IsPlayerAlive() And Not SV_ConfirmVanquished()
+
+        ; Track the highest foes-to-kill count seen so we can trust a zero later
+        Local $foesToKill = GetFoesToKill()
+        If $foesToKill > $sv_max_foes_seen Then $sv_max_foes_seen = $foesToKill
 
         If CheckStuck('Roomba', $SV_FARM_DURATION) == $FAIL Then Return $FAIL
         ; Death / wipe handling
