@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.4.0
+; Version: 1.4.1
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -406,6 +406,11 @@ Func SV_ConfirmVanquished()
     ; freed struct) - requiring a prior positive reading rules out both
     ; startup false positives and client-crash false positives.
     If $sv_max_foes_seen = 0 Then Return False
+    ; Must still be in the correct explorable - if the bot accidentally
+    ; walked through a portal into town, GetAreaVanquished() returns True
+    ; trivially from the outpost side. This guard prevents that false positive.
+    If GetMapID() <> $sv_map_id Then Return False
+    If GetMapType() <> $ID_EXPLORABLE Then Return False
     Local $me = GetMyAgent()
     If CountFoesInRangeOfAgent($me, $RANGE_EARSHOT) > 0 Then Return False
     If Not GetAreaVanquished() Then Return False
@@ -537,6 +542,10 @@ Func SV_BounceRoomba()
     Local $escAngle       = 0.0
     Local $escX2          = 0.0
     Local $escY2          = 0.0
+    Local $escPortals     = 0
+    Local $escFound       = False
+    Local $escTry         = 0
+    Local $tryAngle       = 0.0
     Local $s              = 0
 
     While IsPlayerAlive() And Not SV_ConfirmVanquished()
@@ -735,7 +744,23 @@ Func SV_BounceRoomba()
             $bouncesSinceTarget += 1
             If $wallOnStep1Count >= 6 Then
                 Warn('[SmartVanquisher] Cornered (' & $wallOnStep1Count & ' consecutive step-1 walls) - calling TryToGetUnstuck')
-                $escAngle = (Random(0, 7, 1) * $PI / 4.0)
+                ; Pick a portal-safe escape angle - try all 8 compass directions
+                ; and use the first one that SV_DirectionOpen approves
+                $escAngle = (Random(0, 7, 1) * $PI / 4.0)   ; random start to avoid always trying same order
+                Local $escPortals = SV_GetPortalAgents()
+                Local $escFound = False
+                Local $escTry = 0
+                For $escTry = 0 To 7
+                    Local $tryAngle = $escAngle + ($escTry * $PI / 4.0)
+                    If SV_DirectionOpen($myX, $myY, $tryAngle, $escPortals) Then
+                        $escAngle = $tryAngle
+                        $escFound = True
+                        ExitLoop
+                    EndIf
+                Next
+                If Not $escFound Then
+                    Warn('[SmartVanquisher] No portal-safe escape angle found - using random (portal risk)')
+                EndIf
                 $escX2 = $myX + $RANGE_EARSHOT * 3 * Cos($escAngle)
                 $escY2 = $myY + $RANGE_EARSHOT * 3 * Sin($escAngle)
                 TryToGetUnstuck($escX2, $escY2, 8000)

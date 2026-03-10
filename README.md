@@ -153,6 +153,10 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 
 ## Changelog
 
+### v1.4.1
+- **Fixed false vanquish when accidentally entering town:** `SV_ConfirmVanquished` now requires `GetMapID() = $sv_map_id` AND `GetMapType() = $ID_EXPLORABLE` before trusting `GetAreaVanquished()`. Previously if `TryToGetUnstuck` walked the bot through the entry portal into the outpost, `GetAreaVanquished()` returned True trivially (outposts always report vanquished) triggering a false run-complete
+- **Fixed cornered escape angle walking into portals:** The cornered detection (`$wallOnStep1Count >= 6`) was picking a random escape angle with no portal awareness — the random wiggle could and did walk straight through the entry portal. Now iterates all 8 compass directions from a random start and uses the first one that passes `SV_DirectionOpen`. Falls back to the raw random angle with a warning log only if every direction is portal-blocked
+
 ### v1.4.0
 - **Cell size halved: 1000 → 500 units:** Finer spatial resolution means enemies near cell edges are no longer skipped. A 1000-unit cell is huge — the bot could clip one corner, mark the whole cell visited, and miss a group standing 800 units away on the other side. At 500 units the visited set grows ~4x faster; `$MAX_VISITED` raised from 10000 to 40000 and `$SV_FRONTIER_GIVE_UP_BOUNCES` raised from 12 to 20 to compensate (each step now covers ~2 cells so more bounces are needed to close the same world-space gap)
 - **Confirmed-clear tracking:** A visited cell is not considered done until `CountFoesInRangeOfAgent($me, $SV_CLEAR_CHECK_RADIUS)` returns 0 while the bot is physically inside it. The `$clearedKeys` set tracks confirmed-clear cells separately from `$visitedKeys`. `SV_FindFrontierTarget` now uses a two-pass priority system: visited-but-uncleared cells are targeted first (enemies may still be present), unvisited frontier cells second. This directly prevents vanquish stalls caused by enemies the bot passed without pulling
