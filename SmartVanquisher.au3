@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.3.0
+; Version: 1.3.1
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -453,7 +453,13 @@ Func SV_BounceRoomba()
     Local $visitedKeys[$MAX_VISITED]
     Local $visitedCount = 0
 
-    ; Also track explicitly abandoned frontier cells so we don't re-pick them
+    ; Incremental frontier set - cells that are visited but have at least one
+    ; unvisited 8-directional neighbour. Maintained in sync with visitedKeys so
+    ; SV_FindFrontierTarget never has to derive it from scratch.
+    Local $frontierKeys[$MAX_VISITED]
+    Local $frontierCount = 0
+
+    ; Explicitly abandoned frontier cells - skipped by SV_FindFrontierTarget
     Local $abandonedKeys[$MAX_VISITED]
     Local $abandonedCount = 0
 
@@ -541,9 +547,9 @@ Func SV_BounceRoomba()
         $myX = DllStructGetData($me, 'X')
         $myY = DllStructGetData($me, 'Y')
 
-        ; Mark current cell visited
+        ; Mark current cell visited and update the incremental frontier set
         $cellKey = SV_CellKey($myX, $myY, $CELL)
-        SV_MarkVisited($cellKey, $visitedKeys, $visitedCount, $MAX_VISITED)
+        SV_MarkVisitedFrontier($cellKey, $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $MAX_VISITED, $CELL)
 
         ; --- Frontier target management ---
         If $hasFrontier Then
@@ -558,6 +564,8 @@ Func SV_BounceRoomba()
                 Warn('[SmartVanquisher] Frontier target (' & Round($frontierX) & ',' & Round($frontierY) & ') unreachable after ' & $bouncesSinceTarget & ' bounces - abandoning')
                 $fKey = SV_CellKey($frontierX, $frontierY, $CELL)
                 SV_MarkVisited($fKey, $abandonedKeys, $abandonedCount, $MAX_VISITED)
+                ; Also remove from frontier set and mark visited so scoring ignores it
+                SV_RemoveFromFrontier($fKey, $frontierKeys, $frontierCount)
                 SV_MarkVisited($fKey, $visitedKeys, $visitedCount, $MAX_VISITED)
                 $hasFrontier = False
                 $bouncesSinceTarget = 0
@@ -566,7 +574,7 @@ Func SV_BounceRoomba()
 
         ; Pick new frontier target if needed
         If Not $hasFrontier Then
-            If SV_FindFrontierTarget($myX, $myY, $visitedKeys, $visitedCount, $CELL, $abandonedKeys, $abandonedCount, $fx, $fy) Then
+            If SV_FindFrontierTarget($myX, $myY, $frontierKeys, $frontierCount, $abandonedKeys, $abandonedCount, $CELL, $fx, $fy) Then
                 $frontierX = $fx
                 $frontierY = $fy
                 $hasFrontier = True
@@ -714,7 +722,7 @@ Func SV_BounceRoomba()
                 $hasResume          = False
                 ContinueLoop
             EndIf
-            SV_PoisonDirection($myX, $myY, $heading, $visitedKeys, $visitedCount, $MAX_VISITED, $CELL)
+            SV_PoisonDirection($myX, $myY, $heading, $visitedKeys, $visitedCount, $MAX_VISITED, $CELL, $frontierKeys, $frontierCount)
             $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull, $frontierX, $frontierY, $hasFrontier)
             $hasResume = False
             ContinueLoop
@@ -723,7 +731,7 @@ Func SV_BounceRoomba()
         If SV_Dist($myX, $myY, $targetX, $targetY) > $SV_BOUNCE_STEP * 1.5 Then
             SV_DBG('[SmartVanquisher] Did not reach waypoint - bouncing')
             $bouncesSinceTarget += 1
-            SV_PoisonDirection($myX, $myY, $heading, $visitedKeys, $visitedCount, $MAX_VISITED, $CELL)
+            SV_PoisonDirection($myX, $myY, $heading, $visitedKeys, $visitedCount, $MAX_VISITED, $CELL, $frontierKeys, $frontierCount)
             $heading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull, $frontierX, $frontierY, $hasFrontier)
             $hasResume = False
             ContinueLoop
@@ -739,47 +747,131 @@ EndFunc
 
 
 ; ===========================================================================
-; FRONTIER TARGET SELECTION
+; FRONTIER SET HELPERS
 ;
-; Scans all visited cells and their 8 neighbours. Any visited cell that has
-; at least one unvisited neighbour is a frontier cell. Returns the frontier
-; cell nearest to ($myX, $myY) that is within $SV_FRONTIER_MAX_RANGE and
-; not in the abandoned set. Returns False if no frontier exists.
+; The frontier set is maintained incrementally alongside the visited set.
+; A cell is in the frontier if it is visited and has at least one unvisited
+; 8-directional neighbour.  Instead of deriving this on every call to
+; SV_FindFrontierTarget (O(n^2)), we maintain it as cells are marked visited.
 ; ===========================================================================
 
-Func SV_FindFrontierTarget($myX, $myY, ByRef $visitedKeys, $visitedCount, $cellSize, ByRef $abandonedKeys, $abandonedCount, ByRef $outX, ByRef $outY)
-    Local Const $OFFSETS[8][2] = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]
+; Mark a cell visited and update the frontier set:
+;   - Add the cell to visitedKeys
+;   - Remove it from frontierKeys (it's no longer a boundary)
+;   - For each of its 8 neighbours: if the neighbour is visited and now has
+;     this cell as its only unvisited neighbour removed, re-check and remove
+;     if fully surrounded.  If the neighbour is unvisited, add the current
+;     cell to the frontier (it borders unexplored space).
+Func SV_MarkVisitedFrontier(ByRef $key, ByRef $visitedKeys, ByRef $visitedCount, ByRef $frontierKeys, ByRef $frontierCount, $maxCount, $cellSize)
+    If SV_IsVisited($key, $visitedKeys, $visitedCount) Then Return
+
+    ; Add to visited
+    If $visitedCount < $maxCount Then
+        $visitedKeys[$visitedCount] = $key
+        $visitedCount += 1
+    EndIf
+
+    ; Remove from frontier (it's now fully interior if all neighbours visited)
+    SV_RemoveFromFrontier($key, $frontierKeys, $frontierCount)
+
+    ; Parse cell coords from key
+    Local $parts = StringSplit($key, ',')
+    If $parts[0] <> 2 Then Return
+    Local $cx = Int($parts[1])
+    Local $cy = Int($parts[2])
+
+    ; Check all 8 neighbours
+    Local Const $DX[8] = [1,-1,0,0,1,1,-1,-1]
+    Local Const $DY[8] = [0,0,1,-1,1,-1,1,-1]
+    Local $hasUnvisitedNeighbour = False
+
+    For $d = 0 To 7
+        Local $nKey = ($cx + $DX[$d]) & ',' & ($cy + $DY[$d])
+        If Not SV_IsVisited($nKey, $visitedKeys, $visitedCount) Then
+            ; This cell borders unvisited space - it belongs in the frontier
+            $hasUnvisitedNeighbour = True
+        Else
+            ; Neighbour is visited - check if it should be removed from frontier
+            ; (it may now be fully surrounded if this was its last unvisited neighbour)
+            SV_UpdateFrontierCell($nKey, $cx + $DX[$d], $cy + $DY[$d], $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $maxCount, $DX, $DY)
+        EndIf
+    Next
+
+    If $hasUnvisitedNeighbour Then
+        SV_AddToFrontier($key, $frontierKeys, $frontierCount, $maxCount)
+    EndIf
+EndFunc
+
+
+; Re-evaluate whether a visited cell should be in the frontier.
+; Called when one of its neighbours just became visited.
+Func SV_UpdateFrontierCell(ByRef $key, $cx, $cy, ByRef $visitedKeys, $visitedCount, ByRef $frontierKeys, ByRef $frontierCount, $maxCount, ByRef $DX, ByRef $DY)
+    ; Check if any neighbour is still unvisited
+    Local $stillFrontier = False
+    For $d = 0 To 7
+        Local $nKey = ($cx + $DX[$d]) & ',' & ($cy + $DY[$d])
+        If Not SV_IsVisited($nKey, $visitedKeys, $visitedCount) Then
+            $stillFrontier = True
+            ExitLoop
+        EndIf
+    Next
+    If $stillFrontier Then
+        SV_AddToFrontier($key, $frontierKeys, $frontierCount, $maxCount)
+    Else
+        SV_RemoveFromFrontier($key, $frontierKeys, $frontierCount)
+    EndIf
+EndFunc
+
+
+; Add a key to the frontier set if not already present
+Func SV_AddToFrontier(ByRef $key, ByRef $frontierKeys, ByRef $frontierCount, $maxCount)
+    For $i = 0 To $frontierCount - 1
+        If $frontierKeys[$i] = $key Then Return
+    Next
+    If $frontierCount < $maxCount Then
+        $frontierKeys[$frontierCount] = $key
+        $frontierCount += 1
+    EndIf
+EndFunc
+
+
+; Remove a key from the frontier set (swap-with-last for O(1) removal)
+Func SV_RemoveFromFrontier(ByRef $key, ByRef $frontierKeys, ByRef $frontierCount)
+    For $i = 0 To $frontierCount - 1
+        If $frontierKeys[$i] = $key Then
+            $frontierCount -= 1
+            $frontierKeys[$i] = $frontierKeys[$frontierCount]
+            $frontierKeys[$frontierCount] = ''
+            Return
+        EndIf
+    Next
+EndFunc
+
+
+; ===========================================================================
+; FRONTIER TARGET SELECTION  (O(f) - scans frontier set only)
+;
+; The frontier set is maintained incrementally so this function no longer
+; needs to scan all visited cells or check neighbours. It just finds the
+; nearest non-abandoned entry in the frontier set.
+; ===========================================================================
+
+Func SV_FindFrontierTarget($myX, $myY, ByRef $frontierKeys, $frontierCount, ByRef $abandonedKeys, $abandonedCount, $cellSize, ByRef $outX, ByRef $outY)
     Local $bestDist = $SV_FRONTIER_MAX_RANGE + 1
     Local $found    = False
 
-    For $i = 0 To $visitedCount - 1
-        Local $key = $visitedKeys[$i]
-        ; Parse "cx,cy" cell coordinates from key
+    For $i = 0 To $frontierCount - 1
+        Local $key = $frontierKeys[$i]
+        If $key = '' Then ContinueLoop
+
+        ; Skip abandoned cells
+        If SV_IsVisited($key, $abandonedKeys, $abandonedCount) Then ContinueLoop
+
+        ; Parse cell coords and convert to world centre
         Local $parts = StringSplit($key, ',')
         If $parts[0] <> 2 Then ContinueLoop
-        Local $cx = Int($parts[1])
-        Local $cy = Int($parts[2])
-
-        ; Check if any of the 8 neighbours is unvisited
-        Local $isFrontier = False
-        For $d = 0 To 7
-            Local $nx = $cx + $OFFSETS[$d][0]
-            Local $ny = $cy + $OFFSETS[$d][1]
-            Local $nKey = $nx & ',' & $ny
-            If Not SV_IsVisited($nKey, $visitedKeys, $visitedCount) Then
-                $isFrontier = True
-                ExitLoop
-            EndIf
-        Next
-        If Not $isFrontier Then ContinueLoop
-
-        ; Convert cell coords back to world coords (centre of cell)
-        Local $wx = ($cx * $cellSize) + ($cellSize / 2.0)
-        Local $wy = ($cy * $cellSize) + ($cellSize / 2.0)
-
-        ; Skip if in abandoned set
-        Local $fKey = SV_CellKey($wx, $wy, $cellSize)
-        If SV_IsVisited($fKey, $abandonedKeys, $abandonedCount) Then ContinueLoop
+        Local $wx = (Int($parts[1]) * $cellSize) + ($cellSize / 2.0)
+        Local $wy = (Int($parts[2]) * $cellSize) + ($cellSize / 2.0)
 
         Local $dist = SV_Dist($myX, $myY, $wx, $wy)
         If $dist < $bestDist Then
@@ -935,12 +1027,12 @@ EndFunc
 
 
 ; Mark all cells along a heading as visited so it scores 0 in future bounces.
-Func SV_PoisonDirection($myX, $myY, $heading, ByRef $visitedKeys, ByRef $visitedCount, $maxCount, $cellSize)
+Func SV_PoisonDirection($myX, $myY, $heading, ByRef $visitedKeys, ByRef $visitedCount, $maxCount, $cellSize, ByRef $frontierKeys, ByRef $frontierCount)
     For $step = 1 To 5
         Local $lx  = $myX + ($step * $cellSize) * Cos($heading)
         Local $ly  = $myY + ($step * $cellSize) * Sin($heading)
         Local $key = SV_CellKey($lx, $ly, $cellSize)
-        SV_MarkVisited($key, $visitedKeys, $visitedCount, $maxCount)
+        SV_MarkVisitedFrontier($key, $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $maxCount, $cellSize)
     Next
 EndFunc
 

@@ -153,6 +153,14 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 
 ## Changelog
 
+### v1.3.1
+- **Incremental frontier set replaces O(n²) scan:** `SV_FindFrontierTarget` previously derived the frontier on every call by scanning all visited cells and checking their 8 neighbours — O(n²) with a linear `SV_IsVisited` search inside each neighbour check. On a large map with 500+ visited cells this was ~2 million comparisons per frontier pick, causing visible stuttering late in a run. Replaced with an incrementally maintained `$frontierKeys` set: when a cell is marked visited via `SV_MarkVisitedFrontier`, it is removed from the frontier and its 8 neighbours are each re-evaluated — visited neighbours with no remaining unvisited neighbours are dropped from the frontier, unvisited neighbours confirm the current cell belongs in the frontier. `SV_FindFrontierTarget` now just scans the frontier set directly (O(f) where f stays small throughout the run)
+- **`SV_MarkVisitedFrontier()`:** New function replacing direct `SV_MarkVisited` calls for the main cell grid. Handles visited insertion, frontier removal, and 8-neighbour frontier updates atomically
+- **`SV_UpdateFrontierCell()`:** Re-evaluates whether a visited neighbour should remain in or be removed from the frontier after one of its neighbours becomes visited
+- **`SV_AddToFrontier()` / `SV_RemoveFromFrontier()`:** O(1) set operations. Removal uses swap-with-last to avoid shifting the array
+- **`SV_PoisonDirection()` updated:** Now accepts and passes through the frontier set so poisoned cells are correctly removed from the frontier
+- **`SV_FindFrontierTarget()` signature changed:** Now takes `$frontierKeys`/`$frontierCount` directly instead of the full `$visitedKeys` set
+
 ### v1.3.0
 - **Frontier-directed navigation replaces pure bounce roomba:** The visited-cell grid now defines an explicit frontier — the boundary between explored and unexplored cells. At each navigation step the bot picks the nearest unvisited frontier cell as a medium-range target and steers toward it. The bounce roomba becomes the locomotion layer rather than the navigation brain, eliminating the aimless re-visiting behaviour visible in earlier logs
 - **`SV_FindFrontierTarget()`:** Scans all visited cells, identifies those with at least one unvisited 8-directional neighbour, and returns the nearest such cell within `$SV_FRONTIER_MAX_RANGE` (~10000 units) that hasn't been abandoned
