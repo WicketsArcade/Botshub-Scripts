@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.2.5  
+**Version:** 1.2.6  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -22,8 +22,7 @@ The movement algorithm is inspired by a Roomba vacuum cleaner: walk straight unt
 - **Bounce Roomba algorithm** — systematic area coverage without needing predefined waypoints
 - **Smart heading selection** — scores 6 candidate angles by unvisited cell lookahead, always drifts toward unexplored areas
 - **Direction poisoning** — blocked headings have their lookahead cells marked visited so the same wall is never retried
-- **Portal safety** — checks 4 intermediate points along every proposed step; raises exclusion zone to full earshot range (~1000 units) so no step can overshoot into an exit portal
-- **Entry portal exclusion** — the portal you entered through is ignored during navigation so the bot never deflects from its own spawn
+- **Portal safety** — checks 4 intermediate points along every proposed step; rejects any heading whose path passes within ~800 units of an exit portal. The entry portal is excluded so the bot never deflects from its own spawn
 - **Combat interrupt** — movement stops when foes are detected within ~1500 units; resumes to the saved waypoint after the fight
 - **Loot pickup** — `PickUpItems()` called after each encounter using your BotsHub loot configuration
 - **Fast wall detection** — custom `SV_MoveTo` gives up after 4 consecutive blocked ticks (~400ms) instead of `MoveTo`'s default 14 (~45s)
@@ -136,6 +135,10 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.2.6
+- **Portal safe distance reduced: ~1500 → ~800 units:** The previous `$RANGE_EARSHOT * 1.5` exclusion radius was so large that near map edges — where portals cluster close together — all 8 candidate headings would be simultaneously portal-blocked, triggering an infinite spin loop. The new `$RANGE_EARSHOT * 0.8` (~800 units) gives the bot much more room to maneuver near portals while still comfortably preventing accidental zone entry. The danger zone radius (650 units) and real-time `SV_NearAnyPortal` tripwire remain as secondary guards
+- **Portal-cage escape (`$portalBlockedCount`):** Tracks consecutive "all directions portal-blocked" bounce cycles. After 4 in a row the bot declares itself portal-caged, calls `TryToGetUnstuck` toward `$lastSafeX/$lastSafeY` (the last confirmed safe position before getting trapped), then sets heading directly toward that safe position. Using the last safe position rather than a random escape angle is intentional — it is guaranteed not to be portal territory. The counter resets on any successful step, combat, or whenever at least one direction opens up
 
 ### v1.2.5
 - **Fixed crash false-positive vanquish:** When the GW client crashes, all memory reads return 0 — including `GetFoesToKill()`. The double-read in `SV_ConfirmVanquished` was not sufficient because both reads still return 0 after a crash, 1.5s apart. Fixed by tracking `$sv_max_foes_seen` — the highest `GetFoesToKill()` value seen during the run. `SV_ConfirmVanquished` now requires this to be `> 0` before trusting any zero reading. A client crash mid-run will never trigger a false vanquish because the bot never saw the foe counter count down from a real value. Reset in `SV_ClearState` between runs

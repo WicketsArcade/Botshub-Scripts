@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.2.5
+; Version: 1.2.6
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -83,7 +83,7 @@ Global Const $SV_AGGRO_RANGE           = $RANGE_EARSHOT * 2         ; ~2000
 Global Const $SV_BOUNCE_CELL_SIZE      = $RANGE_EARSHOT             ; ~1000
 
 ; Portal exclusion radius - don't step toward a portal within this range
-Global Const $SV_PORTAL_SAFE_DIST      = $RANGE_EARSHOT * 1.5       ; ~1500
+Global Const $SV_PORTAL_SAFE_DIST      = $RANGE_EARSHOT * 0.8       ; ~800
 
 ; Exclusion radius around a learned danger zone (portal entry point)
 ; Must be < distance from spawn to nearest portal to avoid blocking all directions at startup
@@ -439,6 +439,7 @@ Func SV_BounceRoomba()
     Local $stepsSinceNewCell = 0
     Local $lastCellCount     = 0
     Local $wallOnStep1Count  = 0   ; consecutive wall-on-sub-step-1 hits - detects physical corner
+    Local $portalBlockedCount = 0  ; consecutive all-directions-portal-blocked - detects portal cage
 
     ; Saved waypoint - resume here after combat interrupts a step
     Local $resumeX = 0
@@ -513,18 +514,34 @@ Func SV_BounceRoomba()
             If Not SV_DirectionOpen($myX, $myY, $heading, $portals) Then
                 SV_DBG('[SmartVanquisher] Portal ahead - bouncing')
                 Local $newHeading = SV_PickBounceHeading($myX, $myY, $heading, $visitedKeys, $visitedCount, $CELL, $headingHistory, $headingHistoryFull)
-                ; If we got a least-bad emergency heading, attempt to physically move in it
-                ; so our position shifts and the direction opens up. Without moving, we just
-                ; re-evaluate from the same spot forever.
+                ; Check if all directions are portal-blocked (least-bad fallback - heading unchanged)
                 If $newHeading = $heading Then
-                    ; Heading didn't change at all - force a small step to escape
+                    $portalBlockedCount += 1
+                    If $portalBlockedCount >= 4 Then
+                        Warn('[SmartVanquisher] Portal-caged (' & $portalBlockedCount & ' consecutive) - retreating to last safe position (' & Round($lastSafeX) & ',' & Round($lastSafeY) & ')')
+                        TryToGetUnstuck($lastSafeX, $lastSafeY, 8000)
+                        Local $escDx = $lastSafeX - $myX
+                        Local $escDy = $lastSafeY - $myY
+                        If Abs($escDx) > 1 Or Abs($escDy) > 1 Then
+                            $heading = SV_ATan2($escDy, $escDx)
+                        EndIf
+                        $portalBlockedCount = 0
+                        $wallOnStep1Count   = 0
+                        $stepsSinceNewCell  = 0
+                        $hasResume          = False
+                        ContinueLoop
+                    EndIf
+                    ; Not yet at threshold - force a small step to shift position
                     Local $escX = $myX + 300 * Cos($newHeading)
                     Local $escY = $myY + 300 * Sin($newHeading)
                     SV_MoveTo($escX, $escY, 3)
+                Else
+                    $portalBlockedCount = 0
                 EndIf
                 $heading = $newHeading
                 ContinueLoop
             EndIf
+            $portalBlockedCount = 0
             $targetX = $myX + $SV_BOUNCE_STEP * Cos($heading)
             $targetY = $myY + $SV_BOUNCE_STEP * Sin($heading)
         EndIf
@@ -613,6 +630,7 @@ Func SV_BounceRoomba()
             If SV_CombatCheck() == $FAIL Then Return $FAIL
             $stepsSinceNewCell = 0   ; don't penalise standing still during combat
             $wallOnStep1Count  = 0   ; combat means we moved, not stuck
+            $portalBlockedCount = 0
             ContinueLoop
         EndIf
 
@@ -651,6 +669,7 @@ Func SV_BounceRoomba()
         EndIf
 
         $wallOnStep1Count = 0   ; clean step - definitely not cornered
+        $portalBlockedCount = 0
         RandomSleep(80)
     WEnd
 
