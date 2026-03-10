@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.2.6  
+**Version:** 1.3.0  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -12,18 +12,21 @@
 
 A fully map-agnostic vanquisher and cartography bot for Guild Wars 1. No map IDs, outpost IDs, or hardcoded coordinates — everything is detected at runtime from the player's current context.
 
-The movement algorithm is inspired by a Roomba vacuum cleaner: walk straight until blocked, pick a new heading biased toward unexplored areas, repeat until the zone is fully vanquished.
+The movement algorithm uses **frontier-directed navigation**: the visited-cell grid defines a frontier (the boundary between explored and unexplored space), and the bot always steers toward the nearest unvisited frontier cell. The bounce roomba serves as the locomotion layer — when geometry blocks the direct path, it bounces toward the best open heading that still closes distance to the target. If a target proves unreachable after too many bounces, it is abandoned and the next nearest frontier cell is selected.
 
 ---
 
 ## Features
 
 - **Zero configuration** — start from inside any explorable zone and the bot figures out everything else
-- **Bounce Roomba algorithm** — systematic area coverage without needing predefined waypoints
-- **Smart heading selection** — scores 6 candidate angles by unvisited cell lookahead, always drifts toward unexplored areas
+- **Frontier-directed navigation** — always targets the nearest unvisited frontier cell; eliminates aimless re-visiting of already-covered areas
+- **Bounce roomba locomotion** — steers toward the frontier target using scored bounce candidates; falls back gracefully when geometry blocks the direct path
+- **Frontier bias in heading scoring** — bounce candidates that close distance to the current frontier target receive a +3.0 bonus, keeping detours short
+- **Unreachable target abandonment** — if a frontier target can't be reached after `$SV_FRONTIER_GIVE_UP_BOUNCES` bounces without closing the gap by one cell width, it is marked visited and the next nearest frontier cell is chosen
+- **Smart heading selection** — scores 6 candidate angles by unvisited cell lookahead + reflection bonus + frontier bias + ping-pong penalty
 - **Direction poisoning** — blocked headings have their lookahead cells marked visited so the same wall is never retried
 - **Portal safety** — checks 4 intermediate points along every proposed step; rejects any heading whose path passes within ~800 units of an exit portal. The entry portal is excluded so the bot never deflects from its own spawn
-- **Combat interrupt** — movement stops when foes are detected within ~1500 units; resumes to the saved waypoint after the fight
+- **Combat interrupt** — movement stops when foes are detected within ~2000 units; frontier target recomputed after combat since position may have shifted
 - **Loot pickup** — `PickUpItems()` called after each encounter using your BotsHub loot configuration
 - **Fast wall detection** — custom `SV_MoveTo` gives up after 4 consecutive blocked ticks (~400ms) instead of `MoveTo`'s default 14 (~45s)
 - **Second-run support** — if started from an outpost after a previous run, automatically re-enters the last zone
@@ -79,28 +82,42 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 
 ## Algorithm Details
 
-### Bounce Roomba
+### Frontier-Directed Navigation
 
 ```
-1. Compute initial heading away from the entry portal (into the zone)
-2. Walk straight in 1000-unit steps (SV_BOUNCE_STEP)
-3. On each step, check 4 intermediate points for portal proximity
-4. If SV_MoveTo returns False (wall hit after ~400ms):
-     a. Poison the blocked direction (mark 5 lookahead cells as visited)
-     b. Score 6 candidate headings (±45°, ±90°, ±135° relative to blocked)
-     c. Pick highest-scoring heading (most unvisited cells ahead)
-5. If no new cells visited in 15 consecutive steps: force a bounce
-6. Exit when GetAreaVanquished() returns True
+1. Maintain a visited-cell grid (1000-unit cells) as the bot moves
+2. Frontier = any visited cell with at least one unvisited neighbour
+3. Pick the nearest frontier cell as the current target
+4. Steer toward it using bounce locomotion:
+     a. Set heading toward target
+     b. Walk in 1000-unit steps (SV_MoveTo, 4-tick wall detection)
+     c. On wall hit: score 6 bounce candidates
+        - Unvisited cell lookahead (0-5 pts)
+        - Reflection bonus (0-2 pts, prefers 90deg bounces)
+        - Frontier bias (+3 pts if heading closes gap to target)
+        - Ping-pong / history penalty (-3 to -4 pts)
+        - Pick highest-scoring open heading
+5. If after $SV_FRONTIER_GIVE_UP_BOUNCES bounces the gap hasn't
+   closed by one cell width: abandon target, mark visited, pick next
+6. After combat: recompute frontier from new position
+7. Exit when GetAreaVanquished() returns True (with safety guards)
 ```
+
+### Wall Detection
+
+`SV_MoveTo` is the wall detection mechanism. It issues `Move(x, y)` then polls `IsPlayerMoving()` every 100ms. After 4 consecutive stopped ticks (~400ms) without reaching the destination it returns `False` — a wall hit. This is reliable because:
+- A 300ms grace period after issuing the move prevents false positives before the player starts walking
+- The 4-tick threshold filters out momentary animation jitter when body-blocked
+- The frontier give-up logic catches geometrically isolated targets: if bouncing repeatedly doesn't close the gap, the target is abandoned and the next frontier cell is chosen
 
 ### Combat
 
 ```
-1. Before each step, CountFoesInRangeOfAgent at ~1500 units
+1. Before each step, CountFoesInRangeOfAgent at ~2000 units
 2. Mid-step: check every sub-step — save waypoint and stop immediately if foes appear
 3. Fight: skills 1-8 in order, wait for each cast, skip if on cooldown
-4. Loot within ~1500 units using your configured loot filter
-5. Resume to saved waypoint
+4. Loot within ~2000 units using your configured loot filter
+5. Recompute frontier target (position may have shifted during combat)
 ```
 
 ### Portal Safety (three layers)
@@ -135,6 +152,18 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.3.0
+- **Frontier-directed navigation replaces pure bounce roomba:** The visited-cell grid now defines an explicit frontier — the boundary between explored and unexplored cells. At each navigation step the bot picks the nearest unvisited frontier cell as a medium-range target and steers toward it. The bounce roomba becomes the locomotion layer rather than the navigation brain, eliminating the aimless re-visiting behaviour visible in earlier logs
+- **`SV_FindFrontierTarget()`:** Scans all visited cells, identifies those with at least one unvisited 8-directional neighbour, and returns the nearest such cell within `$SV_FRONTIER_MAX_RANGE` (~10000 units) that hasn't been abandoned
+- **Frontier bias in `SV_PickBounceHeading()`:** Bounce candidates that would close the gap to the current frontier target receive a +3.0 score bonus. This keeps detours short — after a wall hit the bot picks the bounce that both avoids the wall and makes progress toward the target
+- **Unreachable target abandonment:** `$SV_FRONTIER_GIVE_UP_BOUNCES` (default 12) bounces are allowed per target. If after that many bounces the distance to the target hasn't closed by at least one cell width, the target is declared unreachable, added to the abandoned set and the visited map, and the next nearest frontier cell is chosen
+- **Frontier recomputed after combat and death:** Position can shift significantly during a fight or after shrine respawn. The frontier target is cleared on both events so the next target is picked from the actual post-combat position
+- **`$SV_FRONTIER_GIVE_UP_BOUNCES = 12`** and **`$SV_FRONTIER_MAX_RANGE = ~10000`** added as tuning constants
+- **Removed `$stepsSinceNewCell` progress check:** Superseded by the per-target abandon logic, which is more precise — it measures actual distance closed rather than counting loop iterations
+- **Fixed: bot spinning without moving (portal bounce ContinueLoop):** After picking a new heading due to a portal blocking the path, the code was calling `ContinueLoop` which jumped back to the top of the While loop — skipping the entire movement block. The bot would spin logging "Portal ahead - bouncing" thousands of times per second without ever issuing a move. Fixed by removing the `ContinueLoop` so the bot falls through to compute `$targetX/$targetY` with the updated heading and actually walks
+- **Fixed: frontier target immediately re-reached on first pick:** The "target reached" threshold was `dist < $CELL` (1000 units). The first frontier cell is always the cell containing the spawn point, which can be as close as 125 units away — well inside the threshold. The bot would mark it reached, pick it again, mark it reached again, looping forever without moving. Fixed by reducing the threshold to `$CELL / 4` (250 units)
+- **Fixed: `$portalBlockedCount` reset unconditionally:** The cage counter was being reset to 0 on every iteration regardless of whether the direction was actually clear, defeating the cage detection logic. Now only resets when `SV_DirectionOpen` returns True (no portal blocking)
 
 ### v1.2.6
 - **Portal safe distance reduced: ~1500 → ~800 units:** The previous `$RANGE_EARSHOT * 1.5` exclusion radius was so large that near map edges — where portals cluster close together — all 8 candidate headings would be simultaneously portal-blocked, triggering an infinite spin loop. The new `$RANGE_EARSHOT * 0.8` (~800 units) gives the bot much more room to maneuver near portals while still comfortably preventing accidental zone entry. The danger zone radius (650 units) and real-time `SV_NearAnyPortal` tripwire remain as secondary guards
