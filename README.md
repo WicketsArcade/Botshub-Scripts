@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.3.0  
+**Version:** 1.5.0  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,23 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.5.0
+- **BFS frontier target selection:** `SV_FindFrontierTarget` now runs a breadth-first search through the visited cell graph before picking a target. Each frontier cell receives a true navigable hop-distance rather than straight-line Euclidean distance. A cell that is geometrically close but separated by a wall will score many more hops than one that is actually reachable, eliminating the primary cause of target abandons (bot repeatedly picks a cell it can't get to, burns through all give-up bounces, marks it abandoned, repeats). New helper `SV_BFSFrontierDistances` runs O(V log V) — BFS over visited cells with O(log n) binary-search adjacency checks. New helper `SV_BSearchIndex` returns the array index of a key in a sorted set, needed to map frontier cells back to their BFS distance
+- **Momentum-aware frontier scoring:** Each frontier candidate is scored as `hopDist + (angularDiff/PI) * $SV_MOMENTUM_WEIGHT * hopDist`. The momentum term penalises candidates requiring a large heading change. At the default weight of 0.5, a target directly behind costs ~1.5x more than one directly ahead with the same hop count. Keeps the bot sweeping in coherent arcs rather than constantly reversing. New tuning constant `$SV_MOMENTUM_WEIGHT = 0.5`
+- **BFS fallback for unvisited start cell:** If the bot is in an unvisited cell (e.g. immediately after death/respawn at a shrine outside the visited area), BFS has no seed — falls back to Euclidean distance divided by cell size as a hop estimate, preserving correct behaviour in all states
+- **`$SV_FRONTIER_MAX_RANGE` no longer used as distance filter:** BFS unreachable cells are filtered by `$SV_BFS_UNREACHABLE` sentinel instead. Targets that BFS could not reach through visited space are skipped entirely (better than the old max-range cutoff which could discard legitimate far targets)
+
+### v1.4.1
+- **Fixed false vanquish when accidentally entering town:** `SV_ConfirmVanquished` now requires `GetMapID() = $sv_map_id` AND `GetMapType() = $ID_EXPLORABLE` before trusting `GetAreaVanquished()`. Previously if `TryToGetUnstuck` walked the bot through the entry portal into the outpost, `GetAreaVanquished()` returned True trivially (outposts always report vanquished) triggering a false run-complete
+- **Fixed cornered escape angle walking into portals:** The cornered detection (`$wallOnStep1Count >= 6`) was picking a random escape angle with no portal awareness — the random wiggle could and did walk straight through the entry portal. Now iterates all 8 compass directions from a random start and uses the first one that passes `SV_DirectionOpen`. Falls back to the raw random angle with a warning log only if every direction is portal-blocked
+
+### v1.4.0
+- **Cell size halved: 1000 → 500 units:** Finer spatial resolution means enemies near cell edges are no longer skipped. A 1000-unit cell is huge — the bot could clip one corner, mark the whole cell visited, and miss a group standing 800 units away on the other side. At 500 units the visited set grows ~4x faster; `$MAX_VISITED` raised from 10000 to 40000 and `$SV_FRONTIER_GIVE_UP_BOUNCES` raised from 12 to 20 to compensate (each step now covers ~2 cells so more bounces are needed to close the same world-space gap)
+- **Confirmed-clear tracking:** A visited cell is not considered done until `CountFoesInRangeOfAgent($me, $SV_CLEAR_CHECK_RADIUS)` returns 0 while the bot is physically inside it. The `$clearedKeys` set tracks confirmed-clear cells separately from `$visitedKeys`. `SV_FindFrontierTarget` now uses a two-pass priority system: visited-but-uncleared cells are targeted first (enemies may still be present), unvisited frontier cells second. This directly prevents vanquish stalls caused by enemies the bot passed without pulling
+- **`$SV_CLEAR_CHECK_RADIUS = $SV_BOUNCE_CELL_SIZE * 1.5` (~750 units):** Slightly wider than one cell to catch foes near the boundary of an adjacent cell
+- **Binary search for `SV_IsVisited` on `$visitedKeys` and `$clearedKeys`:** Both sorted sets now use O(log n) insertion (`SV_MarkVisitedSorted`) and O(log n) lookup (`SV_IsVisitedBSearch`). At 500-unit cells with 40000 max entries, the difference between linear and binary search is ~200x per lookup. All hot paths — `SV_MarkVisitedFrontier` neighbour checks (8 per cell marked), `SV_UpdateFrontierCell`, `SV_PickBounceHeading` lookahead (5 per bounce candidate × 6 candidates) — now use `SV_IsVisitedBSearch`
+- **`SV_MarkVisited` / `SV_IsVisited` kept for small unsorted sets:** `$abandonedKeys` and `$frontierKeys` use swap-with-last removal and can't maintain sort order; they stay on the linear path. Both sets stay small throughout a run so the cost is negligible
 
 ### v1.3.1
 - **Incremental frontier set replaces O(n²) scan:** `SV_FindFrontierTarget` previously derived the frontier on every call by scanning all visited cells and checking their 8 neighbours — O(n²) with a linear `SV_IsVisited` search inside each neighbour check. On a large map with 500+ visited cells this was ~2 million comparisons per frontier pick, causing visible stuttering late in a run. Replaced with an incrementally maintained `$frontierKeys` set: when a cell is marked visited via `SV_MarkVisitedFrontier`, it is removed from the frontier and its 8 neighbours are each re-evaluated — visited neighbours with no remaining unvisited neighbours are dropped from the frontier, unvisited neighbours confirm the current cell belongs in the frontier. `SV_FindFrontierTarget` now just scans the frontier set directly (O(f) where f stays small throughout the run)

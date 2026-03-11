@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.3.1
+; Version: 1.5.0
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -31,25 +31,35 @@
 ;   FRONTIER-DIRECTED ROOMBA
 ;     The visited-cell grid defines a frontier: the boundary between cells the
 ;     bot has occupied and cells it has not.  At each navigation step the bot
-;     picks the nearest unvisited frontier cell as a medium-range target and
-;     steers toward it using the bounce roomba as a locomotion layer.
+;     picks the best frontier cell as a medium-range target and steers toward
+;     it using the bounce roomba as a locomotion layer.
 ;
-;     Frontier target selection:
-;       - Scan all visited cells, find the one whose grid-neighbour in any of
-;         the 8 compass directions is unvisited.  Pick the nearest such cell
-;         to the player as the next target.
+;     Frontier target selection (BFS + momentum):
+;       - A BFS runs through the visited cell graph from the bot's current
+;         cell, computing the true navigable hop-distance to every frontier
+;         cell.  This means a cell that is geometrically close but separated
+;         by a wall will score far higher (more hops) than one that is
+;         actually reachable, eliminating the main cause of target abandons.
+;       - Each frontier cell is then scored:
+;           score = hopDist + (angularDiff/PI) * MOMENTUM_WEIGHT * hopDist
+;         The momentum term penalises candidates that require a large heading
+;         change, keeping the bot sweeping in coherent arcs rather than
+;         constantly reversing direction.
+;       - Confirmed-clear priority: visited cells not yet confirmed empty of
+;         enemies are preferred over purely unvisited cells, ensuring the bot
+;         re-checks areas it passed through quickly.
 ;       - If no frontier exists the zone is covered - vanquish check fires.
 ;
 ;     Locomotion (bounce roomba):
 ;       - Pick a heading toward the frontier target.
-;       - Walk in 1000-unit steps using SV_MoveTo (fast wall detection).
+;       - Walk in 500-unit steps using SV_MoveTo (fast wall detection).
 ;       - On wall hit: bounce to the best open heading that still closes
 ;         distance to the frontier target, using the same scored candidates
 ;         as before (+-45/90/135 deg + reflection/history bonuses).
 ;       - If after $SV_FRONTIER_GIVE_UP_BOUNCES bounces we have not closed
 ;         the gap to the frontier target by at least one cell width, the
 ;         target is declared unreachable, marked visited, and the next
-;         nearest frontier cell is chosen.
+;         frontier target is chosen (should be rare with BFS).
 ;
 ;   COMBAT
 ;     Foes within ~2000 units interrupt movement.  The bot stands still,
@@ -95,8 +105,15 @@ Global Const $SV_BOUNCE_STEP           = $RANGE_EARSHOT             ; ~1000
 ; Aggro scan range - stop moving and fight if foes within this distance
 Global Const $SV_AGGRO_RANGE           = $RANGE_EARSHOT * 2         ; ~2000
 
-; Cell size for visited-area tracking
-Global Const $SV_BOUNCE_CELL_SIZE      = $RANGE_EARSHOT             ; ~1000
+; Cell size for visited-area tracking.
+; Smaller = finer coverage resolution, fewer enemies fall through gaps.
+; At 500 units a step covers ~2 cells so the visited set grows faster -
+; MAX_VISITED and GIVE_UP_BOUNCES are scaled accordingly.
+Global Const $SV_BOUNCE_CELL_SIZE      = 500                         ; ~500 units
+
+; Radius used to confirm a cell is clear of enemies.
+; 1.5x cell size catches foes near the edge of an adjacent cell.
+Global Const $SV_CLEAR_CHECK_RADIUS    = $SV_BOUNCE_CELL_SIZE * 1.5 ; ~750 units
 
 ; Portal exclusion radius - don't step toward a portal within this range
 Global Const $SV_PORTAL_SAFE_DIST      = $RANGE_EARSHOT * 0.8       ; ~800
@@ -109,9 +126,9 @@ Global Const $SV_DANGER_ZONE_RADIUS    = 650                         ; ~650 unit
 Global Const $SV_DANGER_ZONE_MERGE_DIST = 500
 
 ; Maximum bounces toward a frontier target before declaring it unreachable.
-; If we can't close the gap by one cell width in this many bounces, abandon
-; the target, mark it visited, and pick the next nearest frontier cell.
-Global Const $SV_FRONTIER_GIVE_UP_BOUNCES = 12
+; Scaled up from 12 to 20 because at 500-unit cells a step covers ~2 cells,
+; so more bounces are needed to close the same world-space gap.
+Global Const $SV_FRONTIER_GIVE_UP_BOUNCES = 20
 
 ; How far ahead we look when picking a frontier target (GW units).
 ; Targets beyond this range are ignored - keeps the target reachable.
@@ -125,6 +142,14 @@ Global Const $SV_POST_COMBAT_WAIT      = 800
 
 ; Set to True to enable verbose navigation/combat logging, False for clean runs
 Global Const $SV_DEBUG                 = True
+
+; Momentum weight for frontier target selection.
+; Scales the angular penalty applied to frontier candidates that require
+; turning away from the current heading. Higher = more directional commitment.
+;   0.0 = pure BFS hop distance (no momentum, identical cells tie on distance)
+;   0.5 = a 180deg reversal costs the equivalent of ~1.6 extra BFS hops
+;   1.0 = a 180deg reversal costs the equivalent of ~3.1 extra BFS hops
+Global Const $SV_MOMENTUM_WEIGHT       = 0.5
 
 ; Maximum death penalty (as negative morale, e.g. -60 = 60% DP) before we
 ; abandon the run instead of re-entering after a wipe. 0 = never retry.
@@ -399,6 +424,11 @@ Func SV_ConfirmVanquished()
     ; freed struct) - requiring a prior positive reading rules out both
     ; startup false positives and client-crash false positives.
     If $sv_max_foes_seen = 0 Then Return False
+    ; Must still be in the correct explorable - if the bot accidentally
+    ; walked through a portal into town, GetAreaVanquished() returns True
+    ; trivially from the outpost side. This guard prevents that false positive.
+    If GetMapID() <> $sv_map_id Then Return False
+    If GetMapType() <> $ID_EXPLORABLE Then Return False
     Local $me = GetMyAgent()
     If CountFoesInRangeOfAgent($me, $RANGE_EARSHOT) > 0 Then Return False
     If Not GetAreaVanquished() Then Return False
@@ -447,11 +477,17 @@ EndFunc
 Func SV_BounceRoomba()
     Local Const $PI      = 3.14159265358979
     Local Const $CELL    = $SV_BOUNCE_CELL_SIZE
-    Local Const $MAX_VISITED = 10000  ; cap on visited cell tracking
+    Local Const $MAX_VISITED = 40000  ; raised from 10000 - 500-unit cells grow set ~4x faster
 
-    ; Visited cell registry - parallel key/value arrays
+    ; Visited cell registry - sorted for O(log n) binary search
     Local $visitedKeys[$MAX_VISITED]
     Local $visitedCount = 0
+
+    ; Confirmed-clear registry - cells where foes=0 was verified while inside.
+    ; Sorted for O(log n) binary search. Frontier prefers targeting uncleared
+    ; visited cells before purely unvisited ones.
+    Local $clearedKeys[$MAX_VISITED]
+    Local $clearedCount = 0
 
     ; Incremental frontier set - cells that are visited but have at least one
     ; unvisited 8-directional neighbour. Maintained in sync with visitedKeys so
@@ -501,6 +537,7 @@ Func SV_BounceRoomba()
     Local $myX            = 0.0
     Local $myY            = 0.0
     Local $cellKey        = ''
+    Local $isClear        = False
     Local $distToFrontier = 0.0
     Local $fKey           = ''
     Local $fx             = 0.0
@@ -523,6 +560,10 @@ Func SV_BounceRoomba()
     Local $escAngle       = 0.0
     Local $escX2          = 0.0
     Local $escY2          = 0.0
+    Local $escPortals     = 0
+    Local $escFound       = False
+    Local $escTry         = 0
+    Local $tryAngle       = 0.0
     Local $s              = 0
 
     While IsPlayerAlive() And Not SV_ConfirmVanquished()
@@ -551,6 +592,15 @@ Func SV_BounceRoomba()
         $cellKey = SV_CellKey($myX, $myY, $CELL)
         SV_MarkVisitedFrontier($cellKey, $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $MAX_VISITED, $CELL)
 
+        ; Confirmed-clear check: if no foes within clear radius, mark this cell cleared
+        If Not SV_IsVisitedBSearch($cellKey, $clearedKeys, $clearedCount) Then
+            $isClear = (CountFoesInRangeOfAgent($me, $SV_CLEAR_CHECK_RADIUS) = 0)
+            If $isClear Then
+                SV_MarkVisitedSorted($cellKey, $clearedKeys, $clearedCount, $MAX_VISITED)
+                SV_DBG('[SmartVanquisher] Cell (' & Round($myX) & ',' & Round($myY) & ') confirmed clear')
+            EndIf
+        EndIf
+
         ; --- Frontier target management ---
         If $hasFrontier Then
             $distToFrontier = SV_Dist($myX, $myY, $frontierX, $frontierY)
@@ -574,13 +624,13 @@ Func SV_BounceRoomba()
 
         ; Pick new frontier target if needed
         If Not $hasFrontier Then
-            If SV_FindFrontierTarget($myX, $myY, $frontierKeys, $frontierCount, $abandonedKeys, $abandonedCount, $CELL, $fx, $fy) Then
+            If SV_FindFrontierTarget($myX, $myY, $heading, $frontierKeys, $frontierCount, $visitedKeys, $visitedCount, $clearedKeys, $clearedCount, $abandonedKeys, $abandonedCount, $CELL, $fx, $fy) Then
                 $frontierX = $fx
                 $frontierY = $fy
                 $hasFrontier = True
                 $distAtTargetSet = SV_Dist($myX, $myY, $frontierX, $frontierY)
                 $bouncesSinceTarget = 0
-                Info('[SmartVanquisher] New frontier target: (' & Round($frontierX) & ',' & Round($frontierY) & ') dist=' & Round($distAtTargetSet))
+                Info('[SmartVanquisher] New frontier target: (' & Round($frontierX) & ',' & Round($frontierY) & ') euclidDist=' & Round($distAtTargetSet))
                 $heading = SV_ATan2($frontierY - $myY, $frontierX - $myX)
                 $hasResume = False
             Else
@@ -712,7 +762,23 @@ Func SV_BounceRoomba()
             $bouncesSinceTarget += 1
             If $wallOnStep1Count >= 6 Then
                 Warn('[SmartVanquisher] Cornered (' & $wallOnStep1Count & ' consecutive step-1 walls) - calling TryToGetUnstuck')
-                $escAngle = (Random(0, 7, 1) * $PI / 4.0)
+                ; Pick a portal-safe escape angle - try all 8 compass directions
+                ; and use the first one that SV_DirectionOpen approves
+                $escAngle = (Random(0, 7, 1) * $PI / 4.0)   ; random start to avoid always trying same order
+                Local $escPortals = SV_GetPortalAgents()
+                Local $escFound = False
+                Local $escTry = 0
+                For $escTry = 0 To 7
+                    Local $tryAngle = $escAngle + ($escTry * $PI / 4.0)
+                    If SV_DirectionOpen($myX, $myY, $tryAngle, $escPortals) Then
+                        $escAngle = $tryAngle
+                        $escFound = True
+                        ExitLoop
+                    EndIf
+                Next
+                If Not $escFound Then
+                    Warn('[SmartVanquisher] No portal-safe escape angle found - using random (portal risk)')
+                EndIf
                 $escX2 = $myX + $RANGE_EARSHOT * 3 * Cos($escAngle)
                 $escY2 = $myY + $RANGE_EARSHOT * 3 * Sin($escAngle)
                 TryToGetUnstuck($escX2, $escY2, 8000)
@@ -763,13 +829,10 @@ EndFunc
 ;     if fully surrounded.  If the neighbour is unvisited, add the current
 ;     cell to the frontier (it borders unexplored space).
 Func SV_MarkVisitedFrontier(ByRef $key, ByRef $visitedKeys, ByRef $visitedCount, ByRef $frontierKeys, ByRef $frontierCount, $maxCount, $cellSize)
-    If SV_IsVisited($key, $visitedKeys, $visitedCount) Then Return
+    If SV_IsVisitedBSearch($key, $visitedKeys, $visitedCount) Then Return
 
-    ; Add to visited
-    If $visitedCount < $maxCount Then
-        $visitedKeys[$visitedCount] = $key
-        $visitedCount += 1
-    EndIf
+    ; Add to visited (sorted insert for O(log n) lookup)
+    SV_MarkVisitedSorted($key, $visitedKeys, $visitedCount, $maxCount)
 
     ; Remove from frontier (it's now fully interior if all neighbours visited)
     SV_RemoveFromFrontier($key, $frontierKeys, $frontierCount)
@@ -789,7 +852,7 @@ Func SV_MarkVisitedFrontier(ByRef $key, ByRef $visitedKeys, ByRef $visitedCount,
 
     For $d = 0 To 7
         $nKey = ($cx + $DX[$d]) & ',' & ($cy + $DY[$d])
-        If Not SV_IsVisited($nKey, $visitedKeys, $visitedCount) Then
+        If Not SV_IsVisitedBSearch($nKey, $visitedKeys, $visitedCount) Then
             $hasUnvisitedNeighbour = True
         Else
             SV_UpdateFrontierCell($nKey, $cx + $DX[$d], $cy + $DY[$d], $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $maxCount)
@@ -813,7 +876,7 @@ Func SV_UpdateFrontierCell(ByRef $key, $cx, $cy, ByRef $visitedKeys, $visitedCou
 
     For $d = 0 To 7
         $nKey = ($cx + $DX2[$d]) & ',' & ($cy + $DY2[$d])
-        If Not SV_IsVisited($nKey, $visitedKeys, $visitedCount) Then
+        If Not SV_IsVisitedBSearch($nKey, $visitedKeys, $visitedCount) Then
             $stillFrontier = True
             ExitLoop
         EndIf
@@ -852,17 +915,182 @@ EndFunc
 
 
 ; ===========================================================================
-; FRONTIER TARGET SELECTION  (O(f) - scans frontier set only)
+; BFS THROUGH VISITED CELLS
 ;
-; The frontier set is maintained incrementally so this function no longer
-; needs to scan all visited cells or check neighbours. It just finds the
-; nearest non-abandoned entry in the frontier set.
+; Computes the navigable hop-distance from the bot's current cell to every
+; frontier cell by doing a breadth-first search through the visited cell
+; graph. Two visited cells are adjacent if their grid coordinates differ by
+; at most 1 in each axis (8-connectivity), matching the frontier definition.
+;
+; Returns two parallel arrays:
+;   $outDists[$frontierCount]  - hop distance to each frontier cell
+;                                ($SV_BFS_UNREACHABLE if not reachable)
+;   $outAngles[$frontierCount] - angle from bot to that frontier cell (radians)
+;
+; The BFS visits at most $visitedCount cells so cost is O(V log V) due to
+; binary search lookups.  Called only when a new frontier target is needed.
+; ===========================================================================
+Global Const $SV_BFS_UNREACHABLE = 999999
+
+Func SV_BFSFrontierDistances($myX, $myY, ByRef $frontierKeys, $frontierCount, ByRef $visitedKeys, $visitedCount, $cellSize, ByRef $outDists, ByRef $outAngles)
+    ; Start cell
+    Local $startKey = SV_CellKey($myX, $myY, $cellSize)
+
+    ; Distance map: index = position in visitedKeys (binary search gives index)
+    ; We use a flat array sized to MAX_VISITED; unvisited slots = -1
+    Local $distMap[$visitedCount]
+    Local $di = 0
+    For $di = 0 To $visitedCount - 1
+        $distMap[$di] = -1
+    Next
+
+    ; BFS queue: store (key_index_in_visitedKeys) as integers
+    Local $queue[$visitedCount]
+    Local $qHead = 0
+    Local $qTail = 0
+
+    ; Seed the queue with the start cell
+    Local $startIdx = SV_BSearchIndex($startKey, $visitedKeys, $visitedCount)
+    If $startIdx < 0 Then
+        ; Bot is in an unvisited cell (e.g. just after death/respawn) - fall back
+        ; to straight-line distance for all frontier cells
+        Local $fi = 0
+        For $fi = 0 To $frontierCount - 1
+            Local $fparts = StringSplit($frontierKeys[$fi], ',')
+            If $fparts[0] = 2 Then
+                Local $fwx = (Int($fparts[1]) * $cellSize) + ($cellSize / 2.0)
+                Local $fwy = (Int($fparts[2]) * $cellSize) + ($cellSize / 2.0)
+                Local $hops = Int(SV_Dist($myX, $myY, $fwx, $fwy) / $cellSize) + 1
+                $outDists[$fi]  = $hops
+                $outAngles[$fi] = SV_ATan2($fwy - $myY, $fwx - $myX)
+            Else
+                $outDists[$fi]  = $SV_BFS_UNREACHABLE
+                $outAngles[$fi] = 0.0
+            EndIf
+        Next
+        Return
+    EndIf
+
+    $distMap[$startIdx] = 0
+    $queue[$qTail] = $startIdx
+    $qTail += 1
+
+    ; Build a lookup: frontierKey -> index in frontierKeys array
+    ; We'll mark off found frontier cells to know when to stop early
+    Local $frontierFound = 0
+
+    ; Pre-compute frontier key index map: for each frontier cell store its
+    ; index in visitedKeys (or -1 if not in visited - means it's unvisited border)
+    Local $frontierVisitedIdx[$frontierCount]
+    Local $fvi = 0
+    For $fvi = 0 To $frontierCount - 1
+        $frontierVisitedIdx[$fvi] = SV_BSearchIndex($frontierKeys[$fvi], $visitedKeys, $visitedCount)
+        $outDists[$fvi]  = $SV_BFS_UNREACHABLE
+        $outAngles[$fvi] = 0.0
+    Next
+
+    Local $DX[8] = [1,-1,0,0,1,1,-1,-1]
+    Local $DY[8] = [0,0,1,-1,1,-1,1,-1]
+
+    ; BFS main loop
+    Local $bfi = 0
+    While $qHead < $qTail
+        Local $curIdx  = $queue[$qHead]
+        $qHead += 1
+        Local $curDist = $distMap[$curIdx]
+
+        ; Parse current cell coords from key
+        Local $curParts = StringSplit($visitedKeys[$curIdx], ',')
+        If $curParts[0] <> 2 Then ContinueLoop
+        Local $cx = Int($curParts[1])
+        Local $cy = Int($curParts[2])
+
+        ; Check if this cell is a frontier cell and record its distance
+        For $bfi = 0 To $frontierCount - 1
+            If $frontierVisitedIdx[$bfi] = $curIdx Then
+                $outDists[$bfi] = $curDist
+                Local $fwx2 = ($cx * $cellSize) + ($cellSize / 2.0)
+                Local $fwy2 = ($cy * $cellSize) + ($cellSize / 2.0)
+                $outAngles[$bfi] = SV_ATan2($fwy2 - $myY, $fwx2 - $myX)
+                $frontierFound += 1
+                ExitLoop
+            EndIf
+        Next
+
+        ; Early exit if all frontier cells reached
+        If $frontierFound >= $frontierCount Then ExitLoop
+
+        ; Expand neighbours
+        Local $nd = 0
+        For $nd = 0 To 7
+            Local $nKey2 = ($cx + $DX[$nd]) & ',' & ($cy + $DY[$nd])
+            Local $nIdx  = SV_BSearchIndex($nKey2, $visitedKeys, $visitedCount)
+            If $nIdx < 0 Then ContinueLoop        ; unvisited = wall, skip
+            If $distMap[$nIdx] >= 0 Then ContinueLoop  ; already visited in BFS
+            $distMap[$nIdx] = $curDist + 1
+            If $qTail < $visitedCount Then
+                $queue[$qTail] = $nIdx
+                $qTail += 1
+            EndIf
+        Next
+    WEnd
+EndFunc
+
+
+; Binary search returning the array INDEX of $key in sorted $keys, or -1 if absent
+Func SV_BSearchIndex(ByRef $key, ByRef $keys, $count)
+    If $count = 0 Then Return -1
+    Local $lo = 0, $hi = $count - 1
+    While $lo <= $hi
+        Local $mid = Int(($lo + $hi) / 2)
+        If $keys[$mid] = $key Then Return $mid
+        If $keys[$mid] < $key Then
+            $lo = $mid + 1
+        Else
+            $hi = $mid - 1
+        EndIf
+    WEnd
+    Return -1
+EndFunc
+
+
+; ===========================================================================
+; FRONTIER TARGET SELECTION
+;
+; Uses BFS through the visited cell graph to get true navigable hop-distances
+; to all frontier cells, combined with a momentum term that penalises large
+; heading changes. This avoids targeting cells that are geometrically close
+; but separated by walls, and keeps the bot sweeping in coherent arcs.
+;
+; Scoring (lower = better):
+;   score = hopDist + momentum_penalty
+;   momentum_penalty = (angularDiff / PI) * $SV_MOMENTUM_WEIGHT * hopDist
+;
+; Priority order (same as before):
+;   1. Visited but NOT yet confirmed clear (enemies may be present)
+;   2. Unvisited frontier cells
+;
+; Abandoned cells are skipped in both passes.
 ; ===========================================================================
 
-Func SV_FindFrontierTarget($myX, $myY, ByRef $frontierKeys, $frontierCount, ByRef $abandonedKeys, $abandonedCount, $cellSize, ByRef $outX, ByRef $outY)
-    Local $bestDist = $SV_FRONTIER_MAX_RANGE + 1
-    Local $found    = False
+Func SV_FindFrontierTarget($myX, $myY, $currentHeading, ByRef $frontierKeys, $frontierCount, ByRef $visitedKeys, $visitedCount, ByRef $clearedKeys, $clearedCount, ByRef $abandonedKeys, $abandonedCount, $cellSize, ByRef $outX, ByRef $outY)
+    Local Const $PI = 3.14159265358979
 
+    If $frontierCount = 0 Then Return False
+
+    ; Run BFS to get navigable hop-distances to all frontier cells
+    Local $bfsDists[$frontierCount]
+    Local $bfsAngles[$frontierCount]
+    SV_BFSFrontierDistances($myX, $myY, $frontierKeys, $frontierCount, $visitedKeys, $visitedCount, $cellSize, $bfsDists, $bfsAngles)
+
+    Local $bestScore      = 1000000000
+    Local $bestScoreClear = 1000000000
+    Local $found          = False
+    Local $foundClear     = False
+    Local $clearX         = 0.0
+    Local $clearY         = 0.0
+
+    Local $i = 0
     For $i = 0 To $frontierCount - 1
         Local $key = $frontierKeys[$i]
         If $key = '' Then ContinueLoop
@@ -870,20 +1098,56 @@ Func SV_FindFrontierTarget($myX, $myY, ByRef $frontierKeys, $frontierCount, ByRe
         ; Skip abandoned cells
         If SV_IsVisited($key, $abandonedKeys, $abandonedCount) Then ContinueLoop
 
-        ; Parse cell coords and convert to world centre
+        ; Skip unreachable cells (BFS could not connect)
+        If $bfsDists[$i] = $SV_BFS_UNREACHABLE Then ContinueLoop
+
+        ; Parse cell coords for world position
         Local $parts = StringSplit($key, ',')
         If $parts[0] <> 2 Then ContinueLoop
         Local $wx = (Int($parts[1]) * $cellSize) + ($cellSize / 2.0)
         Local $wy = (Int($parts[2]) * $cellSize) + ($cellSize / 2.0)
 
-        Local $dist = SV_Dist($myX, $myY, $wx, $wy)
-        If $dist < $bestDist Then
-            $bestDist = $dist
-            $outX     = $wx
-            $outY     = $wy
-            $found    = True
+        ; Momentum penalty: angular difference from current heading, normalised [0,1]
+        Local $angleDiff = $bfsAngles[$i] - $currentHeading
+        ; Normalise to [-PI, PI]
+        While $angleDiff > $PI
+            $angleDiff -= 2.0 * $PI
+        WEnd
+        While $angleDiff < -$PI
+            $angleDiff += 2.0 * $PI
+        WEnd
+        If $angleDiff < 0 Then $angleDiff = -$angleDiff  ; abs
+        Local $momentumPenalty = ($angleDiff / $PI) * $SV_MOMENTUM_WEIGHT * $bfsDists[$i]
+
+        Local $score = $bfsDists[$i] + $momentumPenalty
+
+        ; Priority 1: visited but not yet confirmed clear
+        If SV_IsVisitedBSearch($key, $visitedKeys, $visitedCount) And _
+           Not SV_IsVisitedBSearch($key, $clearedKeys, $clearedCount) Then
+            If $score < $bestScoreClear Then
+                $bestScoreClear = $score
+                $clearX         = $wx
+                $clearY         = $wy
+                $foundClear     = True
+            EndIf
+            ContinueLoop
+        EndIf
+
+        ; Priority 2: unvisited frontier cell
+        If $score < $bestScore Then
+            $bestScore = $score
+            $outX      = $wx
+            $outY      = $wy
+            $found     = True
         EndIf
     Next
+
+    ; Uncleared visited cells take priority over unvisited ones
+    If $foundClear Then
+        $outX = $clearX
+        $outY = $clearY
+        Return True
+    EndIf
 
     Return $found
 EndFunc
@@ -979,7 +1243,7 @@ Func SV_PickBounceHeading($myX, $myY, $blockedHeading, ByRef $visitedKeys, $visi
         For $step = 1 To 5
             Local $lx = $myX + ($step * $cellSize) * Cos($candidate)
             Local $ly = $myY + ($step * $cellSize) * Sin($candidate)
-            If Not SV_IsVisited(SV_CellKey($lx, $ly, $cellSize), $visitedKeys, $visitedCount) Then $cellScore += 1
+            If Not SV_IsVisitedBSearch(SV_CellKey($lx, $ly, $cellSize), $visitedKeys, $visitedCount) Then $cellScore += 1
         Next
 
         ; Component 2: reflection bonus - prefer staying close to 90deg bounce
@@ -1050,6 +1314,49 @@ Func SV_CellKey($x, $y, $cellSize)
 EndFunc
 
 
+; Insert $key into a sorted array (insertion sort - maintains sort order for binary search)
+Func SV_MarkVisitedSorted(ByRef $key, ByRef $keys, ByRef $count, $maxCount)
+    If SV_IsVisitedBSearch($key, $keys, $count) Then Return
+    If $count >= $maxCount Then Return
+    ; Find insertion position via binary search
+    Local $lo = 0, $hi = $count
+    While $lo < $hi
+        Local $mid = Int(($lo + $hi) / 2)
+        If $keys[$mid] < $key Then
+            $lo = $mid + 1
+        Else
+            $hi = $mid
+        EndIf
+    WEnd
+    ; Shift right to make room
+    Local $i = 0
+    For $i = $count To $lo + 1 Step -1
+        $keys[$i] = $keys[$i - 1]
+    Next
+    $keys[$lo] = $key
+    $count += 1
+EndFunc
+
+
+; O(log n) existence check via binary search on sorted array
+Func SV_IsVisitedBSearch(ByRef $key, ByRef $keys, $count)
+    If $count = 0 Then Return False
+    Local $lo = 0, $hi = $count - 1
+    While $lo <= $hi
+        Local $mid = Int(($lo + $hi) / 2)
+        If $keys[$mid] = $key Then Return True
+        If $keys[$mid] < $key Then
+            $lo = $mid + 1
+        Else
+            $hi = $mid - 1
+        EndIf
+    WEnd
+    Return False
+EndFunc
+
+
+; Legacy linear wrapper - kept for abandoned/frontier sets which are small
+; and use swap-with-last removal (can't maintain sort order)
 Func SV_MarkVisited(ByRef $key, ByRef $keys, ByRef $count, $maxCount)
     If SV_IsVisited($key, $keys, $count) Then Return
     If $count < $maxCount Then
