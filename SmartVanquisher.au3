@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.6.1
+; Version: 1.6.2
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -702,7 +702,7 @@ Func SV_BounceRoomba()
                 ; (i.e. the bbox has expanded beyond the spawn cell).
                 While $sweepIdx < $sweepPlanCount
                     $fKey = $sweepPlanCX[$sweepIdx] & ',' & $sweepPlanCY[$sweepIdx]
-                    If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) And $sweepPlanCount > 1 Then
+                    If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) Then
                         $sweepIdx += 1
                     Else
                         ExitLoop
@@ -967,12 +967,17 @@ EndFunc
 ; the waypoint nearest to the bot's current cell (curCX, curCY).
 ; Falls back to 0 if everything is cleared (sweep effectively done).
 Func SV_SweepFastForward(ByRef $planCX, ByRef $planCY, $planCount, $curCX, $curCY, ByRef $clearedKeys, $clearedCount, $cellSize)
+    ; Find the nearest uncleared waypoint to start from.
+    ; Never return $planCount on a 1-waypoint plan - the spawn cell is marked
+    ; cleared before the first plan is built, and fast-forwarding past it would
+    ; exhaust the plan immediately, dropping straight to BFS fallback.
+    ; Minimum return value is 0 when the plan has only one waypoint.
     Local $bestIdx  = $planCount   ; default: plan exhausted
     Local $bestDist = 1000000000
     Local $i = 0
     For $i = 0 To $planCount - 1
         Local $fKey = $planCX[$i] & ',' & $planCY[$i]
-        If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) Then ContinueLoop
+        If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) And $planCount > 1 Then ContinueLoop
         Local $dx = $planCX[$i] - $curCX
         Local $dy = $planCY[$i] - $curCY
         Local $d  = $dx * $dx + $dy * $dy   ; squared cell distance - no sqrt needed

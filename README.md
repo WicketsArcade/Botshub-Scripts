@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.6.1  
+**Version:** 1.6.2  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,9 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.6.2
+- **Bug: Initial 1-waypoint sweep still exhausted at startup.** The 1.6.1 fix guarded the skip loop in the main body, but the real cause was `SV_SweepFastForward` — it skips cleared cells when finding the nearest uncleared waypoint, and with only 1 waypoint (already cleared at spawn) it returned `$planCount = 1`, setting `$sweepIdx` to 1 before the loop even ran. Fix: `SV_SweepFastForward` now skips cleared cells only when `$planCount > 1`. On a 1-waypoint plan it always returns 0, forcing the bot to physically visit the spawn cell before the plan can expand. The redundant `$sweepPlanCount > 1` guard added to the skip loop in 1.6.1 is removed.
 
 ### v1.6.1
 Three bugs introduced in v1.6.0 fixed:
