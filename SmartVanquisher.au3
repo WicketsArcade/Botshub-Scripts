@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.5.0
+; Version: 1.6.1
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -28,42 +28,44 @@
 ;
 ; ALGORITHM OVERVIEW:
 ;
-;   FRONTIER-DIRECTED ROOMBA
-;     The visited-cell grid defines a frontier: the boundary between cells the
-;     bot has occupied and cells it has not.  At each navigation step the bot
-;     picks the best frontier cell as a medium-range target and steers toward
-;     it using the bounce roomba as a locomotion layer.
+;   BOUSTROPHEDON SWEEP + FRONTIER FALLBACK
+;     Primary navigation: a boustrophedon (lawnmower) sweep covers the map
+;     in row-by-row order with no backtracking.  The sweep plan is built
+;     dynamically from the visited-cell bounding box and rebuilt whenever
+;     the bot explores beyond the current plan boundary.
 ;
-;     Frontier target selection (BFS + momentum):
-;       - A BFS runs through the visited cell graph from the bot's current
-;         cell, computing the true navigable hop-distance to every frontier
-;         cell.  This means a cell that is geometrically close but separated
-;         by a wall will score far higher (more hops) than one that is
-;         actually reachable, eliminating the main cause of target abandons.
-;       - Each frontier cell is then scored:
-;           score = hopDist + (angularDiff/PI) * MOMENTUM_WEIGHT * hopDist
-;         The momentum term penalises candidates that require a large heading
-;         change, keeping the bot sweeping in coherent arcs rather than
-;         constantly reversing direction.
-;       - Confirmed-clear priority: visited cells not yet confirmed empty of
-;         enemies are preferred over purely unvisited cells, ensuring the bot
-;         re-checks areas it passed through quickly.
-;       - If no frontier exists the zone is covered - vanquish check fires.
+;     Sweep order:
+;       Row 0 (southernmost): west → east
+;       Row 1:                east → west
+;       Row 2:                west → east  ...
+;     Y increases northward; rows advance north each step.
+;
+;     Target selection:
+;       - The sweep plan is a flat ordered array of cell-grid coordinates.
+;       - Each loop iteration advances past any waypoints already confirmed
+;         clear, targeting the next uncleared waypoint in sequence.
+;       - Waypoints unreachable after $SV_FRONTIER_GIVE_UP_BOUNCES bounces
+;         are skipped (marked abandoned) and the sweep advances.
+;       - When the sweep plan is exhausted but GetFoesToKill() > 0, the bot
+;         falls back to BFS+momentum frontier targeting to hunt remaining
+;         enemies the sweep missed (e.g. outside the visited bounding box).
 ;
 ;     Locomotion (bounce roomba):
-;       - Pick a heading toward the frontier target.
+;       - Pick a heading toward the current sweep waypoint.
 ;       - Walk in 500-unit steps using SV_MoveTo (fast wall detection).
 ;       - On wall hit: bounce to the best open heading that still closes
-;         distance to the frontier target, using the same scored candidates
-;         as before (+-45/90/135 deg + reflection/history bonuses).
-;       - If after $SV_FRONTIER_GIVE_UP_BOUNCES bounces we have not closed
-;         the gap to the frontier target by at least one cell width, the
-;         target is declared unreachable, marked visited, and the next
-;         frontier target is chosen (should be rare with BFS).
+;         distance to the target, scored by unvisited lookahead + reflection
+;         bonus + heading history penalty + frontier bias.
+;
+;   CONFIRMED-CLEAR TRACKING
+;     A visited cell is not considered done until CountFoesInRangeOfAgent
+;     returns 0 while the bot is physically inside it.  The sweep advance
+;     logic skips only confirmed-clear cells; uncleared visited cells are
+;     re-targeted so the bot pauses and checks for enemies.
 ;
 ;   COMBAT
 ;     Foes within ~2000 units interrupt movement.  The bot stands still,
-;     fights, loots, then recomputes the frontier and resumes.
+;     fights, loots, then resumes the sweep from the current waypoint.
 ;
 ;   PORTAL SAFETY
 ;     All non-entry portals are detected as static agents with GadgetID != 0.
@@ -478,26 +480,40 @@ Func SV_BounceRoomba()
     Local Const $PI      = 3.14159265358979
     Local Const $CELL    = $SV_BOUNCE_CELL_SIZE
     Local Const $MAX_VISITED = 40000  ; raised from 10000 - 500-unit cells grow set ~4x faster
+    Local Const $MAX_SWEEP   = 12000  ; max sweep plan waypoints (dynamic bbox, not full map)
 
     ; Visited cell registry - sorted for O(log n) binary search
     Local $visitedKeys[$MAX_VISITED]
     Local $visitedCount = 0
 
     ; Confirmed-clear registry - cells where foes=0 was verified while inside.
-    ; Sorted for O(log n) binary search. Frontier prefers targeting uncleared
-    ; visited cells before purely unvisited ones.
+    ; Sorted for O(log n) binary search. Sweep advance skips only cleared cells;
+    ; uncleared visited cells are re-targeted for enemy confirmation.
     Local $clearedKeys[$MAX_VISITED]
     Local $clearedCount = 0
 
-    ; Incremental frontier set - cells that are visited but have at least one
-    ; unvisited 8-directional neighbour. Maintained in sync with visitedKeys so
-    ; SV_FindFrontierTarget never has to derive it from scratch.
+    ; Incremental frontier set - used by BFS fallback mode when sweep is exhausted
+    ; but GetFoesToKill() > 0 (enemies remain outside the sweep bounding box)
     Local $frontierKeys[$MAX_VISITED]
     Local $frontierCount = 0
 
-    ; Explicitly abandoned frontier cells - skipped by SV_FindFrontierTarget
+    ; Explicitly abandoned frontier cells - skipped by SV_FindFrontierTarget in fallback
     Local $abandonedKeys[$MAX_VISITED]
     Local $abandonedCount = 0
+
+    ; ---- Boustrophedon sweep plan ----------------------------------------
+    ; Flat ordered array of cell-grid coords (not world coords).
+    ; Built from the visited-cell bounding box and rebuilt when it expands.
+    Local $sweepPlanCX[$MAX_SWEEP]   ; cell column index (X / CELL)
+    Local $sweepPlanCY[$MAX_SWEEP]   ; cell row index    (Y / CELL)
+    Local $sweepPlanCount = 0
+    Local $sweepIdx       = 0        ; next waypoint to target in sweep plan
+    Local $sweepMinCX     = 0        ; current bounding box in cell coords
+    Local $sweepMaxCX     = 0
+    Local $sweepMinCY     = 0
+    Local $sweepMaxCY     = 0
+    Local $sweepBoxInited = False    ; True once first cell sets the bbox
+    Local $sweepMode      = True     ; True = sweep active, False = BFS fallback
 
     Local $wallOnStep1Count  = 0   ; consecutive wall-on-sub-step-1 hits - detects physical corner
     Local $portalBlockedCount = 0  ; consecutive all-directions-portal-blocked - detects portal cage
@@ -516,12 +532,12 @@ Func SV_BounceRoomba()
         $headingHistory[$hhi] = 9999.0
     Next
 
-    ; --- Frontier target state ---
-    Local $frontierX      = 0.0   ; current frontier target X
-    Local $frontierY      = 0.0   ; current frontier target Y
-    Local $hasFrontier    = False  ; do we have a valid target right now?
-    Local $bouncesSinceTarget = 0  ; bounces since we last computed frontier target
-    Local $distAtTargetSet = 0.0  ; distance to frontier target when we set it
+    ; --- Current target state (used by bounce locomotion and PickBounceHeading) ---
+    Local $frontierX      = 0.0   ; world X of current target (sweep or fallback)
+    Local $frontierY      = 0.0   ; world Y of current target
+    Local $hasFrontier    = False  ; True when a valid target is set
+    Local $bouncesSinceTarget = 0  ; bounces since last target pick
+    Local $distAtTargetSet = 0.0  ; Euclidean dist to target when set (for give-up check)
 
     ; Initial heading: away from entry portal
     Local $heading
@@ -537,6 +553,9 @@ Func SV_BounceRoomba()
     Local $myX            = 0.0
     Local $myY            = 0.0
     Local $cellKey        = ''
+    Local $curCX          = 0
+    Local $curCY          = 0
+    Local $boxChanged     = False
     Local $isClear        = False
     Local $distToFrontier = 0.0
     Local $fKey           = ''
@@ -578,7 +597,7 @@ Func SV_BounceRoomba()
         If IsPlayerDead() Or IsPlayerAndPartyWiped() Then
             If Not SV_WaitUntilAlive() Then Return $FAIL
             $hasResume   = False
-            $hasFrontier = False   ; recompute from shrine position
+            $hasFrontier = False   ; recompute target from new position (shrine may be far away)
             ContinueLoop
         EndIf
 
@@ -601,41 +620,132 @@ Func SV_BounceRoomba()
             EndIf
         EndIf
 
-        ; --- Frontier target management ---
+        ; ---- Bounding box expansion + sweep plan rebuild --------------------
+        $curCX = Int($myX / $CELL)
+        $curCY = Int($myY / $CELL)
+        $boxChanged = False
+        If Not $sweepBoxInited Then
+            $sweepMinCX   = $curCX
+            $sweepMaxCX   = $curCX
+            $sweepMinCY   = $curCY
+            $sweepMaxCY   = $curCY
+            $sweepBoxInited = True
+            $boxChanged   = True
+        Else
+            If $curCX < $sweepMinCX Then
+                $sweepMinCX = $curCX - 1   ; expand one cell ahead of edge
+                $boxChanged = True
+            EndIf
+            If $curCX > $sweepMaxCX Then
+                $sweepMaxCX = $curCX + 1
+                $boxChanged = True
+            EndIf
+            If $curCY < $sweepMinCY Then
+                $sweepMinCY = $curCY - 1
+                $boxChanged = True
+            EndIf
+            If $curCY > $sweepMaxCY Then
+                $sweepMaxCY = $curCY + 1
+                $boxChanged = True
+            EndIf
+        EndIf
+
+        If $boxChanged Then
+            SV_BuildSweepPlan($sweepMinCX, $sweepMaxCX, $sweepMinCY, $sweepMaxCY, $sweepPlanCX, $sweepPlanCY, $sweepPlanCount, $MAX_SWEEP)
+            ; Fast-forward $sweepIdx to the waypoint nearest current position
+            $sweepIdx = SV_SweepFastForward($sweepPlanCX, $sweepPlanCY, $sweepPlanCount, $curCX, $curCY, $clearedKeys, $clearedCount, $CELL)
+            $hasFrontier = False   ; target will be recomputed below
+            ; If plan has uncleared work remaining, restore sweep mode
+            ; (bbox expansion after BFS fallback should resume the sweep)
+            If $sweepIdx < $sweepPlanCount Then $sweepMode = True
+            Info('[SmartVanquisher] Sweep plan rebuilt: ' & $sweepPlanCount & ' waypoints, bbox=[' & $sweepMinCX & '..' & $sweepMaxCX & ', ' & $sweepMinCY & '..' & $sweepMaxCY & '] sweepIdx=' & $sweepIdx)
+        EndIf
+
+        ; ---- Target management ----------------------------------------------
         If $hasFrontier Then
             $distToFrontier = SV_Dist($myX, $myY, $frontierX, $frontierY)
 
-            If $distToFrontier < $CELL / 4 Then
-                SV_DBG('[SmartVanquisher] Frontier target reached - recomputing')
+            ; Reach threshold: must be physically inside the cell ($CELL/2 = 250).
+            ; Using 1.5x was too large - targets ~500 units away were considered
+            ; "reached" after every bounce without the bot actually arriving.
+            If $distToFrontier < $CELL / 2 Then
+                ; Reached current waypoint - advance sweep index
+                If $sweepMode Then $sweepIdx += 1
                 $hasFrontier = False
                 $bouncesSinceTarget = 0
+                SV_DBG('[SmartVanquisher] Waypoint reached')
             ElseIf $bouncesSinceTarget >= $SV_FRONTIER_GIVE_UP_BOUNCES And _
                    $distToFrontier > $distAtTargetSet - $CELL Then
-                Warn('[SmartVanquisher] Frontier target (' & Round($frontierX) & ',' & Round($frontierY) & ') unreachable after ' & $bouncesSinceTarget & ' bounces - abandoning')
-                $fKey = SV_CellKey($frontierX, $frontierY, $CELL)
-                SV_MarkVisited($fKey, $abandonedKeys, $abandonedCount, $MAX_VISITED)
-                ; Also remove from frontier set and mark visited so scoring ignores it
-                SV_RemoveFromFrontier($fKey, $frontierKeys, $frontierCount)
-                SV_MarkVisited($fKey, $visitedKeys, $visitedCount, $MAX_VISITED)
+                If $sweepMode Then
+                    Warn('[SmartVanquisher] Sweep waypoint (' & Round($frontierX) & ',' & Round($frontierY) & ') unreachable after ' & $bouncesSinceTarget & ' bounces - skipping')
+                    $sweepIdx += 1
+                Else
+                    Warn('[SmartVanquisher] Fallback target (' & Round($frontierX) & ',' & Round($frontierY) & ') unreachable after ' & $bouncesSinceTarget & ' bounces - abandoning')
+                    $fKey = SV_CellKey($frontierX, $frontierY, $CELL)
+                    SV_MarkVisited($fKey, $abandonedKeys, $abandonedCount, $MAX_VISITED)
+                    SV_RemoveFromFrontier($fKey, $frontierKeys, $frontierCount)
+                    SV_MarkVisited($fKey, $visitedKeys, $visitedCount, $MAX_VISITED)
+                EndIf
                 $hasFrontier = False
                 $bouncesSinceTarget = 0
             EndIf
         EndIf
 
-        ; Pick new frontier target if needed
+        ; ---- Pick next target -----------------------------------------------
         If Not $hasFrontier Then
-            If SV_FindFrontierTarget($myX, $myY, $heading, $frontierKeys, $frontierCount, $visitedKeys, $visitedCount, $clearedKeys, $clearedCount, $abandonedKeys, $abandonedCount, $CELL, $fx, $fy) Then
-                $frontierX = $fx
-                $frontierY = $fy
-                $hasFrontier = True
-                $distAtTargetSet = SV_Dist($myX, $myY, $frontierX, $frontierY)
-                $bouncesSinceTarget = 0
-                Info('[SmartVanquisher] New frontier target: (' & Round($frontierX) & ',' & Round($frontierY) & ') euclidDist=' & Round($distAtTargetSet))
-                $heading = SV_ATan2($frontierY - $myY, $frontierX - $myX)
-                $hasResume = False
-            Else
-                SV_DBG('[SmartVanquisher] No frontier cells found - zone should be covered')
-                ContinueLoop
+            If $sweepMode Then
+                ; Advance past already-cleared waypoints.
+                ; Skip the spawn cell on the first pass - it is marked cleared at
+                ; startup before any enemies are engaged, so skipping it would
+                ; cause the sweep to exhaust immediately on a 1-waypoint plan.
+                ; We only skip a cleared cell if the plan has more than 1 waypoint
+                ; (i.e. the bbox has expanded beyond the spawn cell).
+                While $sweepIdx < $sweepPlanCount
+                    $fKey = $sweepPlanCX[$sweepIdx] & ',' & $sweepPlanCY[$sweepIdx]
+                    If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) And $sweepPlanCount > 1 Then
+                        $sweepIdx += 1
+                    Else
+                        ExitLoop
+                    EndIf
+                WEnd
+
+                If $sweepIdx < $sweepPlanCount Then
+                    ; Target the next sweep waypoint (world centre of cell)
+                    $frontierX = ($sweepPlanCX[$sweepIdx] * $CELL) + ($CELL / 2.0)
+                    $frontierY = ($sweepPlanCY[$sweepIdx] * $CELL) + ($CELL / 2.0)
+                    $hasFrontier = True
+                    $distAtTargetSet = SV_Dist($myX, $myY, $frontierX, $frontierY)
+                    $bouncesSinceTarget = 0
+                    $heading = SV_ATan2($frontierY - $myY, $frontierX - $myX)
+                    $hasResume = False
+                    Info('[SmartVanquisher] Sweep waypoint ' & $sweepIdx & '/' & $sweepPlanCount & ': (' & Round($frontierX) & ',' & Round($frontierY) & ') dist=' & Round($distAtTargetSet))
+                Else
+                    ; Sweep exhausted
+                    If GetFoesToKill() > 0 And $sv_max_foes_seen > 0 Then
+                        Warn('[SmartVanquisher] Sweep complete but ' & GetFoesToKill() & ' foes remain - switching to BFS fallback')
+                        $sweepMode = False
+                    Else
+                        SV_DBG('[SmartVanquisher] Sweep complete - checking vanquish')
+                        ContinueLoop
+                    EndIf
+                EndIf
+            EndIf
+
+            ; BFS fallback mode (sweep exhausted, enemies remain)
+            If Not $sweepMode Then
+                If SV_FindFrontierTarget($myX, $myY, $heading, $frontierKeys, $frontierCount, $visitedKeys, $visitedCount, $clearedKeys, $clearedCount, $abandonedKeys, $abandonedCount, $CELL, $fx, $fy) Then
+                    $frontierX = $fx
+                    $frontierY = $fy
+                    $hasFrontier = True
+                    $distAtTargetSet = SV_Dist($myX, $myY, $frontierX, $frontierY)
+                    $bouncesSinceTarget = 0
+                    $heading = SV_ATan2($frontierY - $myY, $frontierX - $myX)
+                    $hasResume = False
+                    Info('[SmartVanquisher] BFS fallback target: (' & Round($frontierX) & ',' & Round($frontierY) & ') dist=' & Round($distAtTargetSet))
+                Else
+                    SV_DBG('[SmartVanquisher] No fallback frontier cells - zone should be covered')
+                    ContinueLoop
+                EndIf
             EndIf
         EndIf
 
@@ -809,6 +919,69 @@ Func SV_BounceRoomba()
     WEnd
 
     Return $SUCCESS
+EndFunc
+
+
+; ===========================================================================
+; BOUSTROPHEDON SWEEP PLAN
+;
+; Generates a row-by-row lawnmower waypoint sequence from a cell-grid
+; bounding box. Rows advance northward (increasing CY). Even rows sweep
+; west→east (increasing CX), odd rows east→west (decreasing CX).
+;
+; Outputs cell-grid coordinates (not world coords) into parallel arrays.
+; The caller converts to world coords by: worldX = (CX * CELL) + CELL/2
+; ===========================================================================
+
+Func SV_BuildSweepPlan($minCX, $maxCX, $minCY, $maxCY, ByRef $planCX, ByRef $planCY, ByRef $planCount, $maxPlan)
+    $planCount = 0
+    Local $row = 0
+    Local $cy  = 0
+    Local $cx  = 0
+    For $cy = $minCY To $maxCY
+        $row = $cy - $minCY   ; 0-based row index - determines direction
+        If Mod($row, 2) = 0 Then
+            ; Even row: west → east
+            For $cx = $minCX To $maxCX
+                If $planCount >= $maxPlan Then ExitLoop
+                $planCX[$planCount] = $cx
+                $planCY[$planCount] = $cy
+                $planCount += 1
+            Next
+        Else
+            ; Odd row: east → west
+            For $cx = $maxCX To $minCX Step -1
+                If $planCount >= $maxPlan Then ExitLoop
+                $planCX[$planCount] = $cx
+                $planCY[$planCount] = $cy
+                $planCount += 1
+            Next
+        EndIf
+        If $planCount >= $maxPlan Then ExitLoop
+    Next
+EndFunc
+
+
+; Find the best index to resume the sweep from after a plan rebuild.
+; Skips all waypoints already confirmed clear, then returns the index of
+; the waypoint nearest to the bot's current cell (curCX, curCY).
+; Falls back to 0 if everything is cleared (sweep effectively done).
+Func SV_SweepFastForward(ByRef $planCX, ByRef $planCY, $planCount, $curCX, $curCY, ByRef $clearedKeys, $clearedCount, $cellSize)
+    Local $bestIdx  = $planCount   ; default: plan exhausted
+    Local $bestDist = 1000000000
+    Local $i = 0
+    For $i = 0 To $planCount - 1
+        Local $fKey = $planCX[$i] & ',' & $planCY[$i]
+        If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) Then ContinueLoop
+        Local $dx = $planCX[$i] - $curCX
+        Local $dy = $planCY[$i] - $curCY
+        Local $d  = $dx * $dx + $dy * $dy   ; squared cell distance - no sqrt needed
+        If $d < $bestDist Then
+            $bestDist = $d
+            $bestIdx  = $i
+        EndIf
+    Next
+    Return $bestIdx
 EndFunc
 
 
