@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.6.0  
+**Version:** 1.6.1  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,13 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.6.1
+Three bugs introduced in v1.6.0 fixed:
+
+- **Bug: Sweep immediately fell back to BFS on first iteration.** The spawn cell was confirmed clear before the sweep plan had more than 1 waypoint, so the advance-past-cleared loop skipped it and `$sweepIdx >= $sweepPlanCount` instantly. Fix: the advance loop only skips cleared cells when `$sweepPlanCount > 1` — on a 1-waypoint plan the spawn cell is always targeted first, giving the bbox time to expand before any skipping occurs
+- **Bug: "Waypoint reached" firing every bounce.** The reach threshold was `$CELL * 1.5 = 750` units. BFS fallback targets were only ~450–700 units away, so every bounce landed within threshold and the bot declared the waypoint reached without actually being there. Fixed to `$CELL / 2 = 250` — the bot must be physically inside the cell
+- **Bug: `$sweepMode` never recovered after switching to BFS fallback.** Once the bbox expanded and new uncleared waypoints existed, the sweep should have resumed. Fixed: on every plan rebuild, if `$sweepIdx < $sweepPlanCount` (uncleared work remains), `$sweepMode` is restored to `True`. Also upgraded the plan rebuild log from DBG to Info so it's visible in normal runs
 
 ### v1.6.0
 - **Boustrophedon (lawnmower) sweep:** Primary navigation replaced with a row-by-row sweep that eliminates backtracking by construction. Even rows sweep west→east, odd rows east→west, advancing northward each row. The bounce locomotion layer is unchanged — it still handles walls, portals, and combat interrupts. The sweep simply provides the target sequence instead of BFS frontier picks

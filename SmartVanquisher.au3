@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.6.0
+; Version: 1.6.1
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -655,14 +655,20 @@ Func SV_BounceRoomba()
             ; Fast-forward $sweepIdx to the waypoint nearest current position
             $sweepIdx = SV_SweepFastForward($sweepPlanCX, $sweepPlanCY, $sweepPlanCount, $curCX, $curCY, $clearedKeys, $clearedCount, $CELL)
             $hasFrontier = False   ; target will be recomputed below
-            SV_DBG('[SmartVanquisher] Sweep plan rebuilt: ' & $sweepPlanCount & ' waypoints, bbox=[' & $sweepMinCX & '..' & $sweepMaxCX & ', ' & $sweepMinCY & '..' & $sweepMaxCY & ']')
+            ; If plan has uncleared work remaining, restore sweep mode
+            ; (bbox expansion after BFS fallback should resume the sweep)
+            If $sweepIdx < $sweepPlanCount Then $sweepMode = True
+            Info('[SmartVanquisher] Sweep plan rebuilt: ' & $sweepPlanCount & ' waypoints, bbox=[' & $sweepMinCX & '..' & $sweepMaxCX & ', ' & $sweepMinCY & '..' & $sweepMaxCY & '] sweepIdx=' & $sweepIdx)
         EndIf
 
         ; ---- Target management ----------------------------------------------
         If $hasFrontier Then
             $distToFrontier = SV_Dist($myX, $myY, $frontierX, $frontierY)
 
-            If $distToFrontier < $CELL * 1.5 Then
+            ; Reach threshold: must be physically inside the cell ($CELL/2 = 250).
+            ; Using 1.5x was too large - targets ~500 units away were considered
+            ; "reached" after every bounce without the bot actually arriving.
+            If $distToFrontier < $CELL / 2 Then
                 ; Reached current waypoint - advance sweep index
                 If $sweepMode Then $sweepIdx += 1
                 $hasFrontier = False
@@ -688,10 +694,15 @@ Func SV_BounceRoomba()
         ; ---- Pick next target -----------------------------------------------
         If Not $hasFrontier Then
             If $sweepMode Then
-                ; Advance past already-cleared waypoints
+                ; Advance past already-cleared waypoints.
+                ; Skip the spawn cell on the first pass - it is marked cleared at
+                ; startup before any enemies are engaged, so skipping it would
+                ; cause the sweep to exhaust immediately on a 1-waypoint plan.
+                ; We only skip a cleared cell if the plan has more than 1 waypoint
+                ; (i.e. the bbox has expanded beyond the spawn cell).
                 While $sweepIdx < $sweepPlanCount
                     $fKey = $sweepPlanCX[$sweepIdx] & ',' & $sweepPlanCY[$sweepIdx]
-                    If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) Then
+                    If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) And $sweepPlanCount > 1 Then
                         $sweepIdx += 1
                     Else
                         ExitLoop
