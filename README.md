@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.4.1  
+**Version:** 1.5.0  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,12 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.5.0
+- **BFS frontier target selection:** `SV_FindFrontierTarget` now runs a breadth-first search through the visited cell graph before picking a target. Each frontier cell receives a true navigable hop-distance rather than straight-line Euclidean distance. A cell that is geometrically close but separated by a wall will score many more hops than one that is actually reachable, eliminating the primary cause of target abandons (bot repeatedly picks a cell it can't get to, burns through all give-up bounces, marks it abandoned, repeats). New helper `SV_BFSFrontierDistances` runs O(V log V) — BFS over visited cells with O(log n) binary-search adjacency checks. New helper `SV_BSearchIndex` returns the array index of a key in a sorted set, needed to map frontier cells back to their BFS distance
+- **Momentum-aware frontier scoring:** Each frontier candidate is scored as `hopDist + (angularDiff/PI) * $SV_MOMENTUM_WEIGHT * hopDist`. The momentum term penalises candidates requiring a large heading change. At the default weight of 0.5, a target directly behind costs ~1.5x more than one directly ahead with the same hop count. Keeps the bot sweeping in coherent arcs rather than constantly reversing. New tuning constant `$SV_MOMENTUM_WEIGHT = 0.5`
+- **BFS fallback for unvisited start cell:** If the bot is in an unvisited cell (e.g. immediately after death/respawn at a shrine outside the visited area), BFS has no seed — falls back to Euclidean distance divided by cell size as a hop estimate, preserving correct behaviour in all states
+- **`$SV_FRONTIER_MAX_RANGE` no longer used as distance filter:** BFS unreachable cells are filtered by `$SV_BFS_UNREACHABLE` sentinel instead. Targets that BFS could not reach through visited space are skipped entirely (better than the old max-range cutoff which could discard legitimate far targets)
 
 ### v1.4.1
 - **Fixed false vanquish when accidentally entering town:** `SV_ConfirmVanquished` now requires `GetMapID() = $sv_map_id` AND `GetMapType() = $ID_EXPLORABLE` before trusting `GetAreaVanquished()`. Previously if `TryToGetUnstuck` walked the bot through the entry portal into the outpost, `GetAreaVanquished()` returned True trivially (outposts always report vanquished) triggering a false run-complete
