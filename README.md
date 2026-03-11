@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.5.0  
+**Version:** 1.6.0  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,16 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.6.0
+- **Boustrophedon (lawnmower) sweep:** Primary navigation replaced with a row-by-row sweep that eliminates backtracking by construction. Even rows sweep west→east, odd rows east→west, advancing northward each row. The bounce locomotion layer is unchanged — it still handles walls, portals, and combat interrupts. The sweep simply provides the target sequence instead of BFS frontier picks
+- **Dynamic bounding box:** The sweep plan is built from the visited-cell bounding box rather than a fixed map size. Starts with a single cell at spawn and expands as the bot explores. When a visited cell pushes outside the current box, the plan is rebuilt and `SV_SweepFastForward` resumes from the nearest uncleared waypoint to current position — no work is lost on rebuild
+- **`SV_BuildSweepPlan`:** Generates the ordered waypoint sequence from a cell-grid bounding box. Outputs parallel `$planCX`/`$planCY` arrays. O(rows × cols) — fast enough to call on every bbox expansion
+- **`SV_SweepFastForward`:** After a plan rebuild, finds the best resume index — nearest uncleared waypoint to current cell by squared cell distance. Skips confirmed-clear cells entirely
+- **Confirmed-clear advance:** Each loop iteration advances `$sweepIdx` past waypoints already in `$clearedKeys` before picking a target. Uncleared visited cells are still targeted so the bot pauses to confirm them empty
+- **BFS+momentum fallback:** When the sweep plan is exhausted but `GetFoesToKill() > 0`, the bot logs a warning and switches to the v1.5.0 BFS+momentum frontier mode to hunt enemies the sweep missed (e.g. in alcoves outside the visited bounding box). BFS and momentum infrastructure from v1.5.0 is fully preserved
+- **Unreachable waypoint skip:** A sweep waypoint unreachable after `$SV_FRONTIER_GIVE_UP_BOUNCES` bounces is skipped (`$sweepIdx += 1`) rather than abandoned to a permanent set — the sweep naturally won't revisit it
+- **Reach threshold widened:** Waypoint reached when `dist < $CELL * 1.5` (750 units) vs the old `$CELL / 4` (125 units). Sweep waypoints are cell centres; the bounce locomotion won't land exactly on centre so a wider threshold prevents the bot overshooting and oscillating around a waypoint
 
 ### v1.5.0
 - **BFS frontier target selection:** `SV_FindFrontierTarget` now runs a breadth-first search through the visited cell graph before picking a target. Each frontier cell receives a true navigable hop-distance rather than straight-line Euclidean distance. A cell that is geometrically close but separated by a wall will score many more hops than one that is actually reachable, eliminating the primary cause of target abandons (bot repeatedly picks a cell it can't get to, burns through all give-up bounces, marks it abandoned, repeats). New helper `SV_BFSFrontierDistances` runs O(V log V) — BFS over visited cells with O(log n) binary-search adjacency checks. New helper `SV_BSearchIndex` returns the array index of a key in a sorted set, needed to map frontier cells back to their BFS distance
