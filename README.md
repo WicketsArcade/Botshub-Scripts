@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.3.0  
+**Version:** 1.4.1  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
