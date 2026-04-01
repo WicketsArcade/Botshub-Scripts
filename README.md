@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.7.1  
+**Version:** 1.7.3  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,13 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.7.3
+- **Critical fix: dying ended the run instead of waiting at shrine.** The main loop condition was `While IsPlayerAlive() And Not SV_ConfirmVanquished()` — when the player died, `IsPlayerAlive()` returned False and the loop exited immediately, before the death handler could call `SV_WaitUntilAlive()`. Changed to `While True` with the death/wipe check as the very first thing inside the loop. Now death correctly triggers the shrine wait / hero rez logic and the run continues from the respawn point.
+
+### v1.7.2
+- **Fixed delta tracking false positives.** The v1.7.0 delta check compared `$foeCount` (enemies in aggro range at combat start) against `GetFoesToKill()` drop. This misfired constantly because heroes and AoE kill enemies without the bot targeting them, so `killed < engaged` almost always. Changed to only flag a recheck when `GetFoesToKill()` didn't drop at all after combat — the only case that genuinely indicates nothing died
+- **Clarification: "Run failed" after vanquish is expected.** BotsHub framework displays "Run failed" for any `$PAUSE` return, which SmartVanquisher always returns (intentionally — requires manual restart between zones). This is not a real failure
 
 ### v1.7.1
 - **Bugfix: "Variable must be of type Object" crash on line 1800.** The waypoint validity pre-check (v1.7.0 fix 2) and post-sweep gap scan (fix 3) both call `SV_NearAnyPortal($x, $y, $portals)` inside the target-pick block, but `$portals` was only assigned later in the loop at the "Determine next waypoint" block. Fixed by moving `$portals = SV_GetPortalAgents()` to the top of the main loop body (after position refresh), before any portal checks. Also a minor optimisation — portal list is now fetched once per iteration instead of once per movement attempt.

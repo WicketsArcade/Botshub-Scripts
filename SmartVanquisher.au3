@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.7.1
+; Version: 1.7.3
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -468,6 +468,9 @@ Func SV_Run()
     EndIf
     Info('[SmartVanquisher] Starting frontier-directed roomba')
     Local $result = SV_BounceRoomba()
+    ; Always check vanquish after Roomba exits - even on $FAIL (e.g. DP bail
+    ; after wipe) the zone may already be clear. Don't discard a clean vanquish
+    ; just because the exit path was a death/DP return.
     If SV_ConfirmVanquished() Then
         Info('[SmartVanquisher] Zone vanquished!')
         Return $SUCCESS
@@ -635,21 +638,18 @@ Func SV_BounceRoomba()
     Local $foeX           = 0.0
     Local $foeY           = 0.0
 
-    While IsPlayerAlive() And Not SV_ConfirmVanquished()
-
-        ; Track the highest foes-to-kill count seen so we can trust a zero later
-        $foesToKill = GetFoesToKill()
-        If $foesToKill > $sv_max_foes_seen Then $sv_max_foes_seen = $foesToKill
-
-        If CheckStuck('Roomba', $SV_FARM_DURATION) == $FAIL Then Return $FAIL
-
-        ; Death / wipe handling
+    While True
+        ; Death / wipe handling - must come first before any other checks.
+        ; The old While condition (IsPlayerAlive() And Not SV_ConfirmVanquished())
+        ; exited the loop immediately on death before this handler could run.
         If IsPlayerDead() Or IsPlayerAndPartyWiped() Then
             If Not SV_WaitUntilAlive() Then Return $FAIL
             $hasResume   = False
-            $hasFrontier = False   ; recompute target from new position (shrine may be far away)
+            $hasFrontier = False
             ContinueLoop
         EndIf
+
+        If SV_ConfirmVanquished() Then ExitLoop
 
         $combatResult = SV_CombatCheck()
         If $combatResult == $FAIL Then Return $FAIL
@@ -1921,14 +1921,14 @@ Func SV_CombatCheck()
     If SV_CombatLoop() == $FAIL Then Return $FAIL
     RandomSleep($SV_POST_COMBAT_WAIT)
     If IsPlayerAlive() Then PickUpItems(Null, DefaultShouldPickItem, $SV_AGGRO_RANGE)
-    ; Delta check: if fewer foes died than we engaged, there are likely stragglers
-    ; nearby that weren't in aggro range (split patrol, patrol just arriving).
-    ; Signal the main loop to unmark the current cell as cleared so the sweep
-    ; re-visits it rather than assuming it's done.
+    ; Delta check: if foe count didn't drop at all after combat, something may
+    ; have fled or not been in kill range. Flag a recheck so the sweep re-visits
+    ; this cell rather than assuming it's clear.
+    ; NOTE: We don't compare killed vs engaged count - heroes/AoE can kill
+    ; enemies without the bot targeting them, which would cause false mismatches.
     Local $foesAfterCombat = GetFoesToKill()
-    Local $killed = $foesBeforeCombat - $foesAfterCombat
-    If $killed < $foeCount Then
-        SV_DBG('[SmartVanquisher] Delta mismatch: engaged ' & $foeCount & ', killed ' & $killed & ' - flagging cell recheck')
+    If $foesAfterCombat >= $foesBeforeCombat And $foesBeforeCombat > 0 Then
+        SV_DBG('[SmartVanquisher] No kills detected (before=' & $foesBeforeCombat & ' after=' & $foesAfterCombat & ') - flagging cell recheck')
         $sv_recheck_cell = True
     EndIf
     Return $SUCCESS
