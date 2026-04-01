@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.7.4
+; Version: 1.7.5
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -130,7 +130,7 @@ Global Const $SV_DANGER_ZONE_MERGE_DIST = 500
 ; Maximum bounces toward a frontier target before declaring it unreachable.
 ; Scaled up from 12 to 20 because at 500-unit cells a step covers ~2 cells,
 ; so more bounces are needed to close the same world-space gap.
-Global Const $SV_FRONTIER_GIVE_UP_BOUNCES = 20
+Global Const $SV_FRONTIER_GIVE_UP_BOUNCES = 12
 
 ; How far ahead we look when picking a frontier target (GW units).
 ; Targets beyond this range are ignored - keeps the target reachable.
@@ -809,8 +809,9 @@ Func SV_BounceRoomba()
         If Not $hasFrontier Then
             If $sweepMode Then
                 ; Advance past already-cleared waypoints and portal-adjacent cells.
-                ; First try to find the next uncleared waypoint on the current row
-                ; to avoid jumping between rows mid-sweep.
+                ; Prefer staying on the current row, but only if the row target is
+                ; within 2x BOUNCE_STEP. Beyond that, pick nearest uncleared instead
+                ; to avoid chasing a distant row while stuck in a tight area.
                 $rowSearchIdx = $sweepIdx
                 $foundOnRow   = False
                 If $sweepCurrentRow >= 0 Then
@@ -832,9 +833,11 @@ Func SV_BounceRoomba()
                             $rowSearchIdx += 1
                             ContinueLoop
                         EndIf
-                        ; Found a valid uncleared waypoint on the current row
-                        $sweepIdx    = $rowSearchIdx
-                        $foundOnRow  = True
+                        ; Only use row target if it's close enough to be reachable
+                        If SV_Dist($myX, $myY, $wpX, $wpY) <= $SV_BOUNCE_STEP * 2 Then
+                            $sweepIdx   = $rowSearchIdx
+                            $foundOnRow = True
+                        EndIf
                         ExitLoop
                     WEnd
                 EndIf
@@ -1092,7 +1095,7 @@ Func SV_BounceRoomba()
                     Warn('[SmartVanquisher] No portal-safe escape angle found - using random (portal risk) [' & $portalCorneredCount & ']')
                     ; Learn this position so future runs don't approach here
                     SV_LearnDangerZoneNearPortal($myX, $myY, $escPortals)
-                    If $portalCorneredCount >= 3 Then
+                    If $portalCorneredCount >= 2 Then
                         ; Completely stuck in a portal cage - abandon current waypoint and
                         ; pick a fresh target far away to break out of the area
                         Warn('[SmartVanquisher] Portal-caged ' & $portalCorneredCount & ' times - abandoning current waypoint')

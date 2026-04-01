@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.7.4  
+**Version:** 1.7.5  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,11 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.7.5
+- **Row completion distance cap:** Row preference now only activates when the same-row target is within 2×BOUNCE_STEP (~2000 units). Beyond that the bot picks the nearest uncleared waypoint regardless of row. Prevents the bot from insisting on completing a distant row while physically stuck in a tight area near spawn or a portal
+- **Portal cage threshold 3→2:** Bot abandons current waypoint and picks a new target after 2 consecutive portal-cornered events instead of 3. Saves ~10s per stuck incident
+- **Give-up bounce count 20→12:** Waypoints that prove unreachable are skipped after 12 bounces instead of 20. Combined with the portal cage fix, significantly reduces time wasted in portal-adjacent geometry
 
 ### v1.7.4
 - **Soft-stuck detection:** If `$clearedCount` hasn't increased in 90 seconds and no enemies are in aggro range, the bot logs a warning, resets its target, and skips the current sweep waypoint. Prevents indefinite spinning in areas where the sweep is stuck on an unreachable cell without triggering the global run timer. Progress timer also resets after death/respawn so shrine walking time doesn't count
