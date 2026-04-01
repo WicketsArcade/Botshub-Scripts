@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.7.3
+; Version: 1.7.4
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -537,6 +537,7 @@ Func SV_BounceRoomba()
     Local $sweepMaxCY     = 0
     Local $sweepBoxInited = False    ; True once first cell sets the bbox
     Local $sweepMode      = True     ; True = sweep active, False = BFS fallback
+    Local $sweepCurrentRow = -1      ; row index (CY) bot is currently sweeping - for row completion
 
     Local $wallOnStep1Count  = 0   ; consecutive wall-on-sub-step-1 hits - detects physical corner
     Local $portalBlockedCount = 0  ; consecutive all-directions-portal-blocked - detects portal cage
@@ -545,6 +546,12 @@ Func SV_BounceRoomba()
     Local $resumeX = 0
     Local $resumeY = 0
     Local $hasResume = False
+
+    ; Progress stuck detection - if clearedCount doesn't increase for N seconds,
+    ; force a target reset to break out of soft-stuck situations
+    Local Const $SV_PROGRESS_TIMEOUT = 90000  ; 90s without clearing a new cell = stuck
+    Local $progressTimer    = TimerInit()
+    Local $progressLastCleared = 0            ; clearedCount at last progress check
 
     ; Recent heading history for ping-pong prevention.
     Local Const $HEADING_HISTORY_SIZE = 6
@@ -637,6 +644,8 @@ Func SV_BounceRoomba()
     Local $foeDist        = 0.0
     Local $foeX           = 0.0
     Local $foeY           = 0.0
+    Local $rowSearchIdx   = 0       ; row completion search index
+    Local $foundOnRow     = False   ; whether row search found a valid waypoint
 
     While True
         ; Death / wipe handling - must come first before any other checks.
@@ -644,8 +653,9 @@ Func SV_BounceRoomba()
         ; exited the loop immediately on death before this handler could run.
         If IsPlayerDead() Or IsPlayerAndPartyWiped() Then
             If Not SV_WaitUntilAlive() Then Return $FAIL
-            $hasResume   = False
-            $hasFrontier = False
+            $hasResume          = False
+            $hasFrontier        = False
+            $progressTimer      = TimerInit()   ; don't count shrine walk as stuck
             ContinueLoop
         EndIf
 
@@ -695,6 +705,30 @@ Func SV_BounceRoomba()
             If $isClear Then
                 SV_MarkVisitedSorted($cellKey, $clearedKeys, $clearedCount, $MAX_VISITED)
                 SV_DBG('[SmartVanquisher] Cell (' & Round($myX) & ',' & Round($myY) & ') confirmed clear')
+                ; Reset progress timer - we made real progress
+                $progressTimer      = TimerInit()
+                $progressLastCleared = $clearedCount
+            EndIf
+        EndIf
+
+        ; ---- Soft-stuck detection -------------------------------------------
+        ; If clearedCount hasn't increased in $SV_PROGRESS_TIMEOUT ms and we're
+        ; not in combat, we're spinning without making progress. Force a full
+        ; target reset - abandon current waypoint and recompute from scratch.
+        If TimerDiff($progressTimer) > $SV_PROGRESS_TIMEOUT Then
+            If CountFoesInRangeOfAgent($me, $SV_AGGRO_RANGE) = 0 Then
+                Warn('[SmartVanquisher] No progress in ' & Round($SV_PROGRESS_TIMEOUT/1000) & 's (cleared=' & $clearedCount & ') - forcing target reset')
+                $hasFrontier        = False
+                $hasResume          = False
+                $bouncesSinceTarget = 0
+                $wallOnStep1Count   = 0
+                $portalBlockedCount = 0
+                ; If stuck in sweep mode, skip current waypoint and try next
+                If $sweepMode And $sweepIdx < $sweepPlanCount Then
+                    Warn('[SmartVanquisher] Skipping stuck sweep waypoint ' & $sweepIdx)
+                    $sweepIdx += 1
+                EndIf
+                $progressTimer = TimerInit()
             EndIf
         EndIf
 
@@ -775,24 +809,55 @@ Func SV_BounceRoomba()
         If Not $hasFrontier Then
             If $sweepMode Then
                 ; Advance past already-cleared waypoints and portal-adjacent cells.
-                While $sweepIdx < $sweepPlanCount
-                    $fKey = $sweepPlanCX[$sweepIdx] & ',' & $sweepPlanCY[$sweepIdx]
-                    If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) Then
-                        $sweepIdx += 1
-                        ContinueLoop
-                    EndIf
-                    ; Skip cells whose centre is inside a danger zone or portal radius.
-                    ; Avoids wasting 20 bounces trying to reach an unreachable cell.
-                    $wpX = ($sweepPlanCX[$sweepIdx] * $CELL) + ($CELL / 2.0)
-                    $wpY = ($sweepPlanCY[$sweepIdx] * $CELL) + ($CELL / 2.0)
-                    If SV_NearAnyPortal($wpX, $wpY, $portals) Then
-                        SV_DBG('[SmartVanquisher] Sweep waypoint ' & $sweepIdx & ' portal-adjacent - skipping (' & Round($wpX) & ',' & Round($wpY) & ')')
-                        SV_MarkVisitedSorted($fKey, $clearedKeys, $clearedCount, $MAX_VISITED)
-                        $sweepIdx += 1
-                        ContinueLoop
-                    EndIf
-                    ExitLoop
-                WEnd
+                ; First try to find the next uncleared waypoint on the current row
+                ; to avoid jumping between rows mid-sweep.
+                $rowSearchIdx = $sweepIdx
+                $foundOnRow   = False
+                If $sweepCurrentRow >= 0 Then
+                    While $rowSearchIdx < $sweepPlanCount
+                        If $sweepPlanCY[$rowSearchIdx] <> $sweepCurrentRow Then
+                            $rowSearchIdx += 1
+                            ContinueLoop
+                        EndIf
+                        $fKey = $sweepPlanCX[$rowSearchIdx] & ',' & $sweepPlanCY[$rowSearchIdx]
+                        If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) Then
+                            $rowSearchIdx += 1
+                            ContinueLoop
+                        EndIf
+                        $wpX = ($sweepPlanCX[$rowSearchIdx] * $CELL) + ($CELL / 2.0)
+                        $wpY = ($sweepPlanCY[$rowSearchIdx] * $CELL) + ($CELL / 2.0)
+                        If SV_NearAnyPortal($wpX, $wpY, $portals) Then
+                            $fKey = $sweepPlanCX[$rowSearchIdx] & ',' & $sweepPlanCY[$rowSearchIdx]
+                            SV_MarkVisitedSorted($fKey, $clearedKeys, $clearedCount, $MAX_VISITED)
+                            $rowSearchIdx += 1
+                            ContinueLoop
+                        EndIf
+                        ; Found a valid uncleared waypoint on the current row
+                        $sweepIdx    = $rowSearchIdx
+                        $foundOnRow  = True
+                        ExitLoop
+                    WEnd
+                EndIf
+
+                ; If current row is exhausted, fall through to normal sequential advance
+                If Not $foundOnRow Then
+                    While $sweepIdx < $sweepPlanCount
+                        $fKey = $sweepPlanCX[$sweepIdx] & ',' & $sweepPlanCY[$sweepIdx]
+                        If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) Then
+                            $sweepIdx += 1
+                            ContinueLoop
+                        EndIf
+                        $wpX = ($sweepPlanCX[$sweepIdx] * $CELL) + ($CELL / 2.0)
+                        $wpY = ($sweepPlanCY[$sweepIdx] * $CELL) + ($CELL / 2.0)
+                        If SV_NearAnyPortal($wpX, $wpY, $portals) Then
+                            SV_DBG('[SmartVanquisher] Sweep waypoint ' & $sweepIdx & ' portal-adjacent - skipping (' & Round($wpX) & ',' & Round($wpY) & ')')
+                            SV_MarkVisitedSorted($fKey, $clearedKeys, $clearedCount, $MAX_VISITED)
+                            $sweepIdx += 1
+                            ContinueLoop
+                        EndIf
+                        ExitLoop
+                    WEnd
+                EndIf
 
                 If $sweepIdx < $sweepPlanCount Then
                     ; Target the next sweep waypoint (world centre of cell)
@@ -803,7 +868,8 @@ Func SV_BounceRoomba()
                     $bouncesSinceTarget = 0
                     $heading = SV_ATan2($frontierY - $myY, $frontierX - $myX)
                     $hasResume = False
-                    Info('[SmartVanquisher] Sweep waypoint ' & $sweepIdx & '/' & $sweepPlanCount & ': (' & Round($frontierX) & ',' & Round($frontierY) & ') dist=' & Round($distAtTargetSet))
+                    $sweepCurrentRow = $sweepPlanCY[$sweepIdx]   ; track current row
+                    Info('[SmartVanquisher] Sweep waypoint ' & $sweepIdx & '/' & $sweepPlanCount & ': (' & Round($frontierX) & ',' & Round($frontierY) & ') row=' & $sweepCurrentRow & ' dist=' & Round($distAtTargetSet))
                 Else
                     ; Sweep exhausted
                     If GetFoesToKill() > 0 And $sv_max_foes_seen > 0 Then
@@ -1123,27 +1189,35 @@ EndFunc
 ; Find the best index to resume the sweep from after a plan rebuild.
 ; Skips all waypoints already confirmed clear, then returns the index of
 ; the waypoint nearest to the bot's current cell (curCX, curCY).
-; Falls back to 0 if everything is cleared (sweep effectively done).
+; Prefers waypoints on the same row (curCY) to avoid jumping between rows.
+; Falls back to nearest uncleared waypoint on any row if current row is done.
 Func SV_SweepFastForward(ByRef $planCX, ByRef $planCY, $planCount, $curCX, $curCY, ByRef $clearedKeys, $clearedCount, $cellSize)
-    ; Find the nearest uncleared waypoint to start from.
     ; Never return $planCount on a 1-waypoint plan - the spawn cell is marked
     ; cleared before the first plan is built, and fast-forwarding past it would
     ; exhaust the plan immediately, dropping straight to BFS fallback.
-    ; Minimum return value is 0 when the plan has only one waypoint.
-    Local $bestIdx  = $planCount   ; default: plan exhausted
-    Local $bestDist = 1000000000
+    Local $bestIdx      = $planCount
+    Local $bestDist     = 1000000000
+    Local $bestRowIdx   = $planCount   ; best index on the current row
+    Local $bestRowDist  = 1000000000
     Local $i = 0
     For $i = 0 To $planCount - 1
         Local $fKey = $planCX[$i] & ',' & $planCY[$i]
         If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) And $planCount > 1 Then ContinueLoop
         Local $dx = $planCX[$i] - $curCX
         Local $dy = $planCY[$i] - $curCY
-        Local $d  = $dx * $dx + $dy * $dy   ; squared cell distance - no sqrt needed
+        Local $d  = $dx * $dx + $dy * $dy
+        ; Track nearest on current row separately
+        If $planCY[$i] = $curCY And $d < $bestRowDist Then
+            $bestRowDist = $d
+            $bestRowIdx  = $i
+        EndIf
         If $d < $bestDist Then
             $bestDist = $d
             $bestIdx  = $i
         EndIf
     Next
+    ; Prefer staying on the current row if there's work remaining there
+    If $bestRowIdx < $planCount Then Return $bestRowIdx
     Return $bestIdx
 EndFunc
 

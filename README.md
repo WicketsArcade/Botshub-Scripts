@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.7.3  
+**Version:** 1.7.4  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,10 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.7.4
+- **Soft-stuck detection:** If `$clearedCount` hasn't increased in 90 seconds and no enemies are in aggro range, the bot logs a warning, resets its target, and skips the current sweep waypoint. Prevents indefinite spinning in areas where the sweep is stuck on an unreachable cell without triggering the global run timer. Progress timer also resets after death/respawn so shrine walking time doesn't count
+- **Row completion tracking:** The sweep advance loop now tries to finish all remaining waypoints on the current row before advancing to the next. Reduces the row-jumping behaviour seen on large maps where the bbox expands mid-row and `SV_SweepFastForward` picks a closer cell on a different row. Current row is logged alongside each waypoint pick (`row=N`). `SV_SweepFastForward` also updated to prefer same-row waypoints when resuming after a plan rebuild
 
 ### v1.7.3
 - **Critical fix: dying ended the run instead of waiting at shrine.** The main loop condition was `While IsPlayerAlive() And Not SV_ConfirmVanquished()` — when the player died, `IsPlayerAlive()` returned False and the loop exited immediately, before the death handler could call `SV_WaitUntilAlive()`. Changed to `While True` with the death/wipe check as the very first thing inside the loop. Now death correctly triggers the shrine wait / hero rez logic and the run continues from the respawn point.
