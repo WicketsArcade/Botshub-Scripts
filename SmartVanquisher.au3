@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.6.4
+; Version: 1.7.0
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -195,6 +195,7 @@ Global $sv_entry_portal_found = False
 Global $sv_danger_zones[64][2]   ; [index][0=x, 1=y]
 Global $sv_danger_zone_count = 0
 Global $sv_max_foes_seen = 0   ; highest GetFoesToKill() reading this run - must be >0 to trust a zero
+Global $sv_recheck_cell  = False  ; set by SV_CombatCheck when delta mismatch suggests stragglers
 
 ; ===========================================================================
 ; ENTRY POINT
@@ -276,6 +277,24 @@ Func SmartVanquisherFarm()
     ; Load any previously learned danger zones (portal entry points) for this map
     SV_LoadDangerZones()
 
+    ; Seed danger zones from all non-entry signpost portals visible at startup.
+    ; This gives the bot full portal avoidance coverage before it takes a single
+    ; step, rather than learning reactively only after nearly entering one.
+    ; Entry portal is excluded - it is handled separately by SV_GetPortalAgents.
+    Local $seedPortals = GetAgentArray($ID_AGENT_TYPE_STATIC)
+    Local $seedCount   = 0
+    For $a In $seedPortals
+        If Not SV_IsPortalAgent($a) Then ContinueLoop
+        Local $spx = DllStructGetData($a, 'X')
+        Local $spy = DllStructGetData($a, 'Y')
+        If $sv_entry_portal_found And SV_Dist($spx, $spy, $sv_entry_portal_x, $sv_entry_portal_y) < 50 Then ContinueLoop
+        SV_LearnDangerZone($spx, $spy)
+        $seedCount += 1
+    Next
+    If $seedCount > 0 Then
+        Info('[SmartVanquisher] Seeded ' & $seedCount & ' danger zone(s) from visible portals')
+    EndIf
+
     ; NOTE: Entry portal is intentionally NOT added to danger zones.
     ; SV_GetPortalAgents() already strips it from the signpost portal list,
     ; so it is fully ignored during navigation. Adding it as a danger zone
@@ -333,6 +352,7 @@ Func SV_ClearState()
     $sv_entry_portal_found  = False
     $sv_danger_zone_count   = 0
     $sv_max_foes_seen = 0
+    $sv_recheck_cell  = False
 EndFunc
 
 
@@ -595,6 +615,25 @@ Func SV_BounceRoomba()
     Local $tryAngle       = 0.0
     Local $s              = 0
     Local $portalCorneredCount = 0   ; consecutive cornered-while-portal-blocked events
+    Local $wpX            = 0.0     ; waypoint world X (validity pre-check)
+    Local $wpY            = 0.0     ; waypoint world Y (validity pre-check)
+    Local $combatResult   = 0       ; return value from SV_CombatCheck
+    Local $gapFound       = False   ; post-sweep gap scan
+    Local $gapIdx         = 0
+    Local $gapBestDist    = 0.0
+    Local $gapKey         = ''
+    Local $gapX           = 0.0
+    Local $gapY           = 0.0
+    Local $gapParts       = 0
+    Local $gcx            = 0
+    Local $gcy            = 0
+    Local $gwx            = 0.0
+    Local $gwy            = 0.0
+    Local $gd             = 0.0
+    Local $nearestFoe     = 0       ; aggro pre-pull
+    Local $foeDist        = 0.0
+    Local $foeX           = 0.0
+    Local $foeY           = 0.0
 
     While IsPlayerAlive() And Not SV_ConfirmVanquished()
 
@@ -612,13 +651,38 @@ Func SV_BounceRoomba()
             ContinueLoop
         EndIf
 
-        If SV_CombatCheck() == $FAIL Then Return $FAIL
+        $combatResult = SV_CombatCheck()
+        If $combatResult == $FAIL Then Return $FAIL
+        ; Delta mismatch from combat - unmark current cell so sweep re-visits it
+        If $sv_recheck_cell Then
+            $sv_recheck_cell = False
+            SV_RemoveFromSorted($cellKey, $clearedKeys, $clearedCount)
+            SV_DBG('[SmartVanquisher] Cell (' & Round($myX) & ',' & Round($myY) & ') unmarked - rechecking for stragglers')
+        EndIf
 
+        ; Refresh position once per main loop iteration
         $me  = GetMyAgent()
         $myX = DllStructGetData($me, 'X')
         $myY = DllStructGetData($me, 'Y')
 
-        ; Mark current cell visited and update the incremental frontier set
+        ; Aggro pre-pull: if enemies are within 1.5x earshot, move toward the
+        ; nearest one directly rather than waiting to stumble into aggro range
+        ; mid-step. Reduces dead walking time between groups on open terrain.
+        If CountFoesInRangeOfAgent($me, $SV_AGGRO_RANGE) = 0 Then
+            $nearestFoe = GetNearestEnemyToAgent($me)
+            If $nearestFoe <> Null Then
+                $foeDist = GetDistance($me, $nearestFoe)
+                If $foeDist > 0 And $foeDist < $RANGE_EARSHOT * 1.5 Then
+                    $foeX = DllStructGetData($nearestFoe, 'X')
+                    $foeY = DllStructGetData($nearestFoe, 'Y')
+                    SV_DBG('[SmartVanquisher] Pre-pull: foe at dist=' & Round($foeDist) & ' - moving to engage')
+                    SV_MoveTo($foeX + ($myX - $foeX) * 0.3, $foeY + ($myY - $foeY) * 0.3, 4)
+                    ContinueLoop
+                EndIf
+            EndIf
+        EndIf
+
+        ; Update cell key and mark visited after position refresh
         $cellKey = SV_CellKey($myX, $myY, $CELL)
         SV_MarkVisitedFrontier($cellKey, $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $MAX_VISITED, $CELL)
 
@@ -707,19 +771,24 @@ Func SV_BounceRoomba()
         ; ---- Pick next target -----------------------------------------------
         If Not $hasFrontier Then
             If $sweepMode Then
-                ; Advance past already-cleared waypoints.
-                ; Skip the spawn cell on the first pass - it is marked cleared at
-                ; startup before any enemies are engaged, so skipping it would
-                ; cause the sweep to exhaust immediately on a 1-waypoint plan.
-                ; We only skip a cleared cell if the plan has more than 1 waypoint
-                ; (i.e. the bbox has expanded beyond the spawn cell).
+                ; Advance past already-cleared waypoints and portal-adjacent cells.
                 While $sweepIdx < $sweepPlanCount
                     $fKey = $sweepPlanCX[$sweepIdx] & ',' & $sweepPlanCY[$sweepIdx]
                     If SV_IsVisitedBSearch($fKey, $clearedKeys, $clearedCount) Then
                         $sweepIdx += 1
-                    Else
-                        ExitLoop
+                        ContinueLoop
                     EndIf
+                    ; Skip cells whose centre is inside a danger zone or portal radius.
+                    ; Avoids wasting 20 bounces trying to reach an unreachable cell.
+                    $wpX = ($sweepPlanCX[$sweepIdx] * $CELL) + ($CELL / 2.0)
+                    $wpY = ($sweepPlanCY[$sweepIdx] * $CELL) + ($CELL / 2.0)
+                    If SV_NearAnyPortal($wpX, $wpY, $portals) Then
+                        SV_DBG('[SmartVanquisher] Sweep waypoint ' & $sweepIdx & ' portal-adjacent - skipping (' & Round($wpX) & ',' & Round($wpY) & ')')
+                        SV_MarkVisitedSorted($fKey, $clearedKeys, $clearedCount, $MAX_VISITED)
+                        $sweepIdx += 1
+                        ContinueLoop
+                    EndIf
+                    ExitLoop
                 WEnd
 
                 If $sweepIdx < $sweepPlanCount Then
@@ -735,8 +804,50 @@ Func SV_BounceRoomba()
                 Else
                     ; Sweep exhausted
                     If GetFoesToKill() > 0 And $sv_max_foes_seen > 0 Then
-                        Warn('[SmartVanquisher] Sweep complete but ' & GetFoesToKill() & ' foes remain - switching to BFS fallback')
-                        $sweepMode = False
+                        ; Before falling back to BFS, check if any visited frontier
+                        ; cells were never cleared (visited but not confirmed empty).
+                        ; These are gaps the sweep passed over - target them first.
+                        $gapFound    = False
+                        $gapIdx      = 0
+                        $gapBestDist = 1000000000
+                        $gapKey      = ''
+                        $gapX        = 0.0
+                        $gapY        = 0.0
+                        For $gapIdx = 0 To $frontierCount - 1
+                            $gapKey = $frontierKeys[$gapIdx]
+                            If SV_IsVisitedBSearch($gapKey, $clearedKeys, $clearedCount) Then ContinueLoop
+                            If SV_IsVisitedBSearch($gapKey, $abandonedKeys, $abandonedCount) Then ContinueLoop
+                            ; Parse cell key back to world coords
+                            $gapParts = StringSplit($gapKey, ',')
+                            If $gapParts[0] <> 2 Then ContinueLoop
+                            $gcx = Number($gapParts[1])
+                            $gcy = Number($gapParts[2])
+                            $gwx = ($gcx * $CELL) + ($CELL / 2.0)
+                            $gwy = ($gcy * $CELL) + ($CELL / 2.0)
+                            If SV_NearAnyPortal($gwx, $gwy, $portals) Then ContinueLoop
+                            $gd = SV_Dist($myX, $myY, $gwx, $gwy)
+                            If $gd < $gapBestDist Then
+                                $gapBestDist = $gd
+                                $gapX = $gwx
+                                $gapY = $gwy
+                                $gapFound = True
+                            EndIf
+                        Next
+                        If $gapFound Then
+                            Warn('[SmartVanquisher] Gap scan: targeting uncleared frontier cell (' & Round($gapX) & ',' & Round($gapY) & ') dist=' & Round($gapBestDist))
+                            $frontierX = $gapX
+                            $frontierY = $gapY
+                            $hasFrontier = True
+                            $distAtTargetSet = $gapBestDist
+                            $bouncesSinceTarget = 0
+                            $heading = SV_ATan2($frontierY - $myY, $frontierX - $myX)
+                            $hasResume = False
+                            ; Don't switch to BFS yet - re-enter sweep mode targeting the gap
+                            $sweepMode = True
+                        Else
+                            Warn('[SmartVanquisher] Sweep complete but ' & GetFoesToKill() & ' foes remain - switching to BFS fallback')
+                            $sweepMode = False
+                        EndIf
                     Else
                         SV_DBG('[SmartVanquisher] Sweep complete - checking vanquish')
                         ContinueLoop
@@ -876,7 +987,13 @@ Func SV_BounceRoomba()
         Next
 
         If $combatInterrupted Then
-            If SV_CombatCheck() == $FAIL Then Return $FAIL
+            $combatResult = SV_CombatCheck()
+            If $combatResult == $FAIL Then Return $FAIL
+            If $sv_recheck_cell Then
+                $sv_recheck_cell = False
+                SV_RemoveFromSorted($cellKey, $clearedKeys, $clearedCount)
+                SV_DBG('[SmartVanquisher] Cell (' & Round($myX) & ',' & Round($myY) & ') unmarked - rechecking for stragglers')
+            EndIf
             $wallOnStep1Count   = 0
             $portalBlockedCount = 0
             $hasFrontier        = False
@@ -1572,6 +1689,32 @@ Func SV_IsVisitedBSearch(ByRef $key, ByRef $keys, $count)
 EndFunc
 
 
+; Remove a key from a sorted array (O(log n) find + O(n) shift).
+; No-op if key is not present.
+Func SV_RemoveFromSorted(ByRef $key, ByRef $keys, ByRef $count)
+    If $count = 0 Then Return
+    Local $lo = 0, $hi = $count - 1, $idx = -1
+    While $lo <= $hi
+        Local $mid = Int(($lo + $hi) / 2)
+        If $keys[$mid] = $key Then
+            $idx = $mid
+            ExitLoop
+        EndIf
+        If $keys[$mid] < $key Then
+            $lo = $mid + 1
+        Else
+            $hi = $mid - 1
+        EndIf
+    WEnd
+    If $idx = -1 Then Return   ; not found
+    Local $i = 0
+    For $i = $idx To $count - 2
+        $keys[$i] = $keys[$i + 1]
+    Next
+    $count -= 1
+EndFunc
+
+
 ; Legacy linear wrapper - kept for abandoned/frontier sets which are small
 ; and use swap-with-last removal (can't maintain sort order)
 Func SV_MarkVisited(ByRef $key, ByRef $keys, ByRef $count, $maxCount)
@@ -1772,9 +1915,20 @@ Func SV_CombatCheck()
     Local $foeCount = CountFoesInRangeOfAgent($me, $SV_AGGRO_RANGE)
     If $foeCount = 0 Then Return $SUCCESS
     Info('[SmartVanquisher] Engaging ' & $foeCount & ' foes')
+    Local $foesBeforeCombat = GetFoesToKill()
     If SV_CombatLoop() == $FAIL Then Return $FAIL
     RandomSleep($SV_POST_COMBAT_WAIT)
     If IsPlayerAlive() Then PickUpItems(Null, DefaultShouldPickItem, $SV_AGGRO_RANGE)
+    ; Delta check: if fewer foes died than we engaged, there are likely stragglers
+    ; nearby that weren't in aggro range (split patrol, patrol just arriving).
+    ; Signal the main loop to unmark the current cell as cleared so the sweep
+    ; re-visits it rather than assuming it's done.
+    Local $foesAfterCombat = GetFoesToKill()
+    Local $killed = $foesBeforeCombat - $foesAfterCombat
+    If $killed < $foeCount Then
+        SV_DBG('[SmartVanquisher] Delta mismatch: engaged ' & $foeCount & ', killed ' & $killed & ' - flagging cell recheck')
+        $sv_recheck_cell = True
+    EndIf
     Return $SUCCESS
 EndFunc
 

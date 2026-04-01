@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.6.4  
+**Version:** 1.7.0  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,15 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.7.0
+Five improvements implemented together:
+
+- **Danger zone seeding from signposts at startup:** All non-entry portal signpost agents visible at map load are immediately recorded as danger zones. Bot has full portal avoidance before taking a single step, rather than learning reactively after nearly entering one
+- **Waypoint validity pre-check:** Sweep advance loop now skips cells whose world-centre falls inside a danger zone or portal radius. Eliminates 20-bounce waste cycles targeting unreachable portal-adjacent cells — marks them cleared immediately and moves on
+- **Post-sweep gap scan:** When the sweep exhausts but `GetFoesToKill() > 0`, before switching to BFS fallback the bot scans all frontier cells (visited but uncleared, non-portal-adjacent) and targets the nearest one. Catches pockets the sweep passed at the wrong angle without triggering the heavier BFS machinery
+- **Agent-count delta tracking:** `SV_CombatCheck` now compares `GetFoesToKill()` before and after each fight. If fewer enemies died than were engaged (split patrol, straggler out of range), it sets `$sv_recheck_cell = True`. The main loop then calls `SV_RemoveFromSorted` to unmark the current cell as cleared, ensuring the sweep re-visits it. New `SV_RemoveFromSorted` helper (O(log n) find + O(n) shift on sorted arrays)
+- **Aggro pre-pull:** At the top of each main loop iteration, if no enemies are in aggro range but one is within 1.5×earshot, the bot moves 70% of the way toward it before looping. Reduces dead walking time between groups on open terrain
 
 ### v1.6.4
 Three fixes for spawn-area portal accidents (observed on map 94 where entry portal is ~340 units from spawn):
