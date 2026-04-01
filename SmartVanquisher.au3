@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.6.2
+; Version: 1.6.3
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -584,6 +584,7 @@ Func SV_BounceRoomba()
     Local $escTry         = 0
     Local $tryAngle       = 0.0
     Local $s              = 0
+    Local $portalCorneredCount = 0   ; consecutive cornered-while-portal-blocked events
 
     While IsPlayerAlive() And Not SV_ConfirmVanquished()
 
@@ -855,6 +856,8 @@ Func SV_BounceRoomba()
 
             If SV_NearAnyPortal($myX, $myY, $portals) Then
                 Warn('[SmartVanquisher] Too close to portal after sub-step - bouncing away')
+                ; Learn this location as a danger zone so future runs avoid approaching here
+                SV_LearnDangerZoneNearPortal($myX, $myY, $portals)
                 $wallHit = True
                 ExitLoop
             EndIf
@@ -887,7 +890,30 @@ Func SV_BounceRoomba()
                     EndIf
                 Next
                 If Not $escFound Then
-                    Warn('[SmartVanquisher] No portal-safe escape angle found - using random (portal risk)')
+                    ; All directions portal-blocked while cornered - count consecutive events
+                    $portalCorneredCount += 1
+                    Warn('[SmartVanquisher] No portal-safe escape angle found - using random (portal risk) [' & $portalCorneredCount & ']')
+                    ; Learn this position so future runs don't approach here
+                    SV_LearnDangerZoneNearPortal($myX, $myY, $escPortals)
+                    If $portalCorneredCount >= 3 Then
+                        ; Completely stuck in a portal cage - abandon current waypoint and
+                        ; pick a fresh target far away to break out of the area
+                        Warn('[SmartVanquisher] Portal-caged ' & $portalCorneredCount & ' times - abandoning current waypoint')
+                        If $sweepMode Then
+                            $sweepIdx += 1   ; skip this waypoint in the sweep
+                        Else
+                            $fKey = SV_CellKey($frontierX, $frontierY, $CELL)
+                            SV_MarkVisited($fKey, $abandonedKeys, $abandonedCount, $MAX_VISITED)
+                            SV_RemoveFromFrontier($fKey, $frontierKeys, $frontierCount)
+                        EndIf
+                        $hasFrontier        = False
+                        $portalCorneredCount = 0
+                        $wallOnStep1Count   = 0
+                        $hasResume          = False
+                        ContinueLoop
+                    EndIf
+                Else
+                    $portalCorneredCount = 0
                 EndIf
                 $escX2 = $myX + $RANGE_EARSHOT * 3 * Cos($escAngle)
                 $escY2 = $myY + $RANGE_EARSHOT * 3 * Sin($escAngle)
@@ -915,6 +941,7 @@ Func SV_BounceRoomba()
 
         $wallOnStep1Count   = 0
         $portalBlockedCount = 0
+        $portalCorneredCount = 0
         RandomSleep(80)
     WEnd
 
@@ -1886,9 +1913,26 @@ Func SV_LearnDangerZone($x, $y)
 EndFunc
 
 
-; ===========================================================================
-; MOVEMENT / MATH HELPERS
-; ===========================================================================
+; Learn a danger zone based on proximity to a known portal agent.
+; Prefers the portal's own coordinates over the bot's current position,
+; since the portal is the actual hazard and its coords are more stable.
+; Falls back to ($x, $y) (bot position) if no portal is within 2x safe dist.
+Func SV_LearnDangerZoneNearPortal($x, $y, $portals)
+    Local $bestDist = $SV_PORTAL_SAFE_DIST * 2
+    Local $bestX    = $x
+    Local $bestY    = $y
+    For $a In $portals
+        Local $ax = DllStructGetData($a, 'X')
+        Local $ay = DllStructGetData($a, 'Y')
+        Local $d  = SV_Dist($x, $y, $ax, $ay)
+        If $d < $bestDist Then
+            $bestDist = $d
+            $bestX    = $ax
+            $bestY    = $ay
+        EndIf
+    Next
+    SV_LearnDangerZone($bestX, $bestY)
+EndFunc
 
 ; Like MoveTo() but gives up after $maxBlocked *consecutive* not-moving ticks.
 ; Includes a startup grace period so false positives don't fire on the very

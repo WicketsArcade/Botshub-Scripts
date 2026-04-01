@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.6.2  
+**Version:** 1.6.3  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,9 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.6.3
+- **Bug: Bot trapped indefinitely near portal, spinning TryToGetUnstuck for 30+ minutes.** The danger zone system only learned portals when the bot actually entered one (map ID change). Portals detected by the pre-move check or `SV_NearAnyPortal` mid-step were bounced away from but never recorded, so the bot could be caged near them forever. Three fixes: (1) `SV_LearnDangerZoneNearPortal` helper — when `SV_NearAnyPortal` fires mid-step, learns the nearest portal agent's position (or bot position as fallback) as a danger zone so future runs avoid the approach path. (2) `$portalCorneredCount` — tracks consecutive cornered+no-safe-escape events; after 3, learns the position as a danger zone AND skips the current sweep waypoint (or abandons the BFS target), breaking out of the area entirely. (3) `$portalCorneredCount` resets to 0 on any successful full step.
 
 ### v1.6.2
 - **Bug: Initial 1-waypoint sweep still exhausted at startup.** The 1.6.1 fix guarded the skip loop in the main body, but the real cause was `SV_SweepFastForward` — it skips cleared cells when finding the nearest uncleared waypoint, and with only 1 waypoint (already cleared at spawn) it returned `$planCount = 1`, setting `$sweepIdx` to 1 before the loop even ran. Fix: `SV_SweepFastForward` now skips cleared cells only when `$planCount > 1`. On a 1-waypoint plan it always returns 0, forcing the bot to physically visit the spawn cell before the plan can expand. The redundant `$sweepPlanCount > 1` guard added to the skip loop in 1.6.1 is removed.
