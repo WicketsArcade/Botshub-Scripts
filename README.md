@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.7.0  
+**Version:** 1.7.1  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,9 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.7.1
+- **Bugfix: "Variable must be of type Object" crash on line 1800.** The waypoint validity pre-check (v1.7.0 fix 2) and post-sweep gap scan (fix 3) both call `SV_NearAnyPortal($x, $y, $portals)` inside the target-pick block, but `$portals` was only assigned later in the loop at the "Determine next waypoint" block. Fixed by moving `$portals = SV_GetPortalAgents()` to the top of the main loop body (after position refresh), before any portal checks. Also a minor optimisation — portal list is now fetched once per iteration instead of once per movement attempt.
 
 ### v1.7.0
 Five improvements implemented together:

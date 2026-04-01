@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.7.0
+; Version: 1.7.1
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -686,6 +686,9 @@ Func SV_BounceRoomba()
         $cellKey = SV_CellKey($myX, $myY, $CELL)
         SV_MarkVisitedFrontier($cellKey, $visitedKeys, $visitedCount, $frontierKeys, $frontierCount, $MAX_VISITED, $CELL)
 
+        ; Fetch portal list once per iteration - used by pre-check, gap scan, and move logic
+        $portals = SV_GetPortalAgents()
+
         ; Confirmed-clear check: if no foes within clear radius, mark this cell cleared
         If Not SV_IsVisitedBSearch($cellKey, $clearedKeys, $clearedCount) Then
             $isClear = (CountFoesInRangeOfAgent($me, $SV_CLEAR_CHECK_RADIUS) = 0)
@@ -874,7 +877,6 @@ Func SV_BounceRoomba()
         EndIf
 
         ; Determine next waypoint
-        $portals = SV_GetPortalAgents()
         If $hasResume Then
             $targetX   = $resumeX
             $targetY   = $resumeY
