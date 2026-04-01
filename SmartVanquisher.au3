@@ -4,7 +4,7 @@
 #   Smart Vanquisher Bot        #
 #                               #
 #################################
-; Version: 1.6.3
+; Version: 1.6.4
 ; Author: Wicket
 ; Framework: BotsHub by caustic-kronos
 ;
@@ -547,6 +547,16 @@ Func SV_BounceRoomba()
         $heading = $PI / 2.0
     EndIf
 
+    ; Launch vector: take one explicit step away from the entry portal before
+    ; entering the main loop. This prevents the bot from thrashing in a tight
+    ; corridor near spawn and accidentally walking back through the portal.
+    If $sv_entry_portal_found Then
+        Local $launchX = $sv_entry_x + $SV_BOUNCE_STEP * Cos($heading)
+        Local $launchY = $sv_entry_y + $SV_BOUNCE_STEP * Sin($heading)
+        Info('[SmartVanquisher] Launch vector: moving to (' & Round($launchX) & ',' & Round($launchY) & ')')
+        SV_MoveTo($launchX, $launchY, 6)
+    EndIf
+
     ; --- Loop-scope variables (hoisted to function scope - AutoIt requires this with MustDeclareVars) ---
     Local $foesToKill     = 0
     Local $me             = 0
@@ -626,10 +636,12 @@ Func SV_BounceRoomba()
         $curCY = Int($myY / $CELL)
         $boxChanged = False
         If Not $sweepBoxInited Then
-            $sweepMinCX   = $curCX
-            $sweepMaxCX   = $curCX
-            $sweepMinCY   = $curCY
-            $sweepMaxCY   = $curCY
+            ; Pad 2 cells in every direction on first build so the bot has real
+            ; targets to head toward immediately rather than thrashing at spawn.
+            $sweepMinCX   = $curCX - 2
+            $sweepMaxCX   = $curCX + 2
+            $sweepMinCY   = $curCY - 2
+            $sweepMaxCY   = $curCY + 2
             $sweepBoxInited = True
             $boxChanged   = True
         Else
@@ -1587,9 +1599,19 @@ Func SV_GetPortalAgents()
     Local $all  = GetAgentArray($ID_AGENT_TYPE_STATIC)
     Local $out[32]
     Local $n    = 0
+    ; Only exclude the entry portal while the bot is still near spawn.
+    ; Once the bot has moved away (>1x EARSHOT from entry coords), the entry
+    ; portal becomes a real hazard if the bot bounces back toward it.
+    Local $nearSpawn = False
+    If $sv_entry_portal_found Then
+        Local $me2 = GetMyAgent()
+        Local $bx  = DllStructGetData($me2, 'X')
+        Local $by  = DllStructGetData($me2, 'Y')
+        $nearSpawn = (SV_Dist($bx, $by, $sv_entry_x, $sv_entry_y) < $RANGE_EARSHOT)
+    EndIf
     For $a In $all
         If Not SV_IsPortalAgent($a) Then ContinueLoop
-        If $sv_entry_portal_found Then
+        If $sv_entry_portal_found And $nearSpawn Then
             Local $px = DllStructGetData($a, 'X')
             Local $py = DllStructGetData($a, 'Y')
             If SV_Dist($px, $py, $sv_entry_portal_x, $sv_entry_portal_y) < 50 Then ContinueLoop

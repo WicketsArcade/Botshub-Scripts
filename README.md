@@ -1,6 +1,6 @@
 # SmartVanquisher
 
-**Version:** 1.6.3  
+**Version:** 1.6.4  
 **Author:** Wicket  
 **Framework:** [BotsHub](https://github.com/caustic-kronos/BotsHub) by caustic-kronos  
 **Language:** AutoIt (.au3)  
@@ -152,6 +152,13 @@ The bot reads map ID, outpost ID, entry position, and entry portal automatically
 ---
 
 ## Changelog
+
+### v1.6.4
+Three fixes for spawn-area portal accidents (observed on map 94 where entry portal is ~340 units from spawn):
+
+- **Bbox padding:** Initial sweep bbox is now padded 2 cells in all directions from spawn instead of starting as a single cell. Gives the bot 25 real waypoints immediately (5×5 grid) so it heads purposefully into the zone rather than thrashing in place near spawn
+- **Entry portal re-inclusion after leaving spawn:** `SV_GetPortalAgents` previously excluded the entry portal permanently. Now re-includes it once the bot is >1×EARSHOT from spawn coordinates — at that distance, bouncing back through the entry portal is a real risk and it should be treated as a hazard
+- **Launch vector:** Before entering the main loop, the bot takes one explicit `SV_MoveTo` step directly away from the entry portal. Prevents the very first bounce cascade from occurring at spawn where geometry is tightest and the entry portal is closest
 
 ### v1.6.3
 - **Bug: Bot trapped indefinitely near portal, spinning TryToGetUnstuck for 30+ minutes.** The danger zone system only learned portals when the bot actually entered one (map ID change). Portals detected by the pre-move check or `SV_NearAnyPortal` mid-step were bounced away from but never recorded, so the bot could be caged near them forever. Three fixes: (1) `SV_LearnDangerZoneNearPortal` helper — when `SV_NearAnyPortal` fires mid-step, learns the nearest portal agent's position (or bot position as fallback) as a danger zone so future runs avoid the approach path. (2) `$portalCorneredCount` — tracks consecutive cornered+no-safe-escape events; after 3, learns the position as a danger zone AND skips the current sweep waypoint (or abandons the BFS target), breaking out of the area entirely. (3) `$portalCorneredCount` resets to 0 on any successful full step.
